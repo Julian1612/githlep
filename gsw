@@ -1,0 +1,49 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------------------
+# GSW - GIT SWITCH WIZARD
+# ---------------------------------------------------------------------------------------
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo -e "\n\033[1mNAME\033[0m\n    gsw - Interactive Branch Switcher\n"
+    echo -e "\033[1mDESCRIPTION\033[0m\n    Scrollable list of local branches."
+    echo -e "    - Highlights current branch."
+    echo -e "    - Auto-pulls changes from remote after switching."
+    echo -e "    - Performs 'Deep Wake Up' to force VS Code to refresh git status.\n"
+    exit 0
+fi
+
+BOLD='\033[1m'; RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; WHITE='\033[37m'; GRAY='\033[90m'; CYAN='\033[36m'; MAGENTA='\033[35m'
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then echo -e "${RED}Error: Not a git repo.${RESET}"; exit 1; fi
+CURRENT_BRANCH=$(git branch --show-current); RAW_BRANCHES=$(git branch --format='%(refname:short)')
+BRANCHES=(); for priority in "main" "master"; do if echo "$RAW_BRANCHES" | grep -q "^$priority$"; then BRANCHES+=("$priority"); fi; done
+while IFS= read -r line; do if [[ -n "$line" && "$line" != "main" && "$line" != "master" ]]; then BRANCHES+=("$line"); fi; done <<< "$RAW_BRANCHES"
+TOTAL=${#BRANCHES[@]}; if [ $TOTAL -eq 0 ]; then echo -e "${GRAY}No branches found.${RESET}"; exit 0; fi
+
+MAX_VISIBLE=10; SELECTED=0; VIEW_START=0
+for i in "${!BRANCHES[@]}"; do if [[ "${BRANCHES[$i]}" != "$CURRENT_BRANCH" ]]; then SELECTED=$i; break; fi; done
+tput civis; cleanup() { tput cnorm; }; trap cleanup EXIT
+
+while true; do
+    if [ $SELECTED -lt $VIEW_START ]; then VIEW_START=$SELECTED; elif [ $SELECTED -ge $((VIEW_START + MAX_VISIBLE)) ]; then VIEW_START=$((SELECTED - MAX_VISIBLE + 1)); fi
+    echo -ne "\r"; echo -e "${BOLD}${WHITE}SWITCH BRANCH${RESET} ${GRAY}(${TOTAL} available)${RESET}\033[K"; echo -e "${GRAY}Current: ${CYAN}${CURRENT_BRANCH}${RESET}\033[K"; echo -e "${GRAY}----------------------------------------${RESET}\033[K"
+    for (( i=0; i<MAX_VISIBLE; i++ )); do
+        IDX=$((VIEW_START + i)); echo -ne "\033[K"
+        if [ $IDX -ge $TOTAL ]; then echo -e ""; else
+            BRANCH_NAME=${BRANCHES[$IDX]}
+            if [[ "$BRANCH_NAME" == "$CURRENT_BRANCH" ]]; then DISPLAY_NAME="${CYAN}${BOLD}${BRANCH_NAME}${RESET} ${CYAN}(Current)${RESET}"; elif [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" ]]; then DISPLAY_NAME="${MAGENTA}${BOLD}${BRANCH_NAME}${RESET}"; else DISPLAY_NAME="${BRANCH_NAME}"; fi
+            if [ $IDX -eq $SELECTED ]; then echo -e "${GREEN}${BOLD}  > ${DISPLAY_NAME}${RESET}"; else echo -e "    ${DISPLAY_NAME}${RESET}"; fi
+        fi
+    done
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SELECTED--)); [ $SELECTED -lt 0 ] && SELECTED=$((TOTAL - 1));; '[B') ((SELECTED++)); [ $SELECTED -ge $TOTAL ] && SELECTED=0;; esac; elif [[ $key == "q" ]]; then LINES_TO_CLEAR=$((3 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR; tput ed; exit 0; elif [[ $key == "" ]]; then break; fi
+    LINES_TO_CLEAR=$((3 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR
+done
+LINES_TO_CLEAR=$((3 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR; tput ed; tput cnorm
+TARGET_BRANCH=${BRANCHES[$SELECTED]}
+OUTPUT=$(git switch -q "$TARGET_BRANCH" 2>&1); STATUS=$?
+if [ $STATUS -eq 0 ]; then echo -e "${GREEN}✔ Switched to ${BOLD}$TARGET_BRANCH${RESET}"; else if [[ "$OUTPUT" == *"Already on"* ]]; then echo -e "${CYAN}✔ Already on ${BOLD}$TARGET_BRANCH${RESET}"; else echo -e "${RED}✖ Switch failed:${RESET}"; echo "$OUTPUT"; exit 1; fi; fi
+if [ -d ".git" ]; then touch .git/HEAD; touch .git; touch .; fi; git update-index -q --refresh 2>/dev/null
+echo -ne "${BOLD}${CYAN}Pull changes from remote? [y/N]${RESET} "; read -rsn1 key_pull
+if [[ "$key_pull" =~ ^[Yy]$ ]]; then echo -ne "\r\033[K"; echo -e "${GRAY}Pulling...${RESET}"; PULL_OUT=$(git pull 2>&1); PULL_STATUS=$?; tput cuu 1; echo -ne "\r\033[K"
+    if [ $PULL_STATUS -eq 0 ]; then echo -e "${GREEN}✔ Pull complete${RESET}"; else echo -e "${RED}✖ Pull failed:${RESET}"; echo "$PULL_OUT"; fi
+else echo -ne "\r\033[K"; fi
