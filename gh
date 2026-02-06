@@ -1,0 +1,131 @@
+#!/bin/bash
+
+# ---------------------------------------------------------------------------------------
+# GH - GIT DASHBOARD & REFERENCE MANAGER
+# ---------------------------------------------------------------------------------------
+
+CONFIG_FILE="$HOME/.config/gh_favorites"
+mkdir -p "$HOME/.config"
+
+# Colors
+B='\033[1m'; R='\033[0m'
+G='\033[32m'; C='\033[36m'; GR='\033[90m'; W='\033[37m'; M='\033[35m'; Y='\033[33m'; BL='\033[34m'; RED='\033[31m'
+
+# --- DEFAULT CONFIG ---
+if [ ! -f "$CONFIG_FILE" ]; then
+    cat <<EOF > "$CONFIG_FILE"
+gs|Status (Short)|git status --short
+gp|Push (Upload)|git push
+gl|Pull (Update)|git pull --no-rebase
+gm|Main & Pull|git switch main && git pull
+glo|Log Graph|git log --oneline --graph
+EOF
+fi
+
+# --- HELPER FUNCTIONS ---
+show_help() {
+    echo -e "${B}Usage:${R}"
+    echo -e "  gh                   ${GR}Show Dashboard${R}"
+    echo -e "  gh -l, --list        ${GR}Show FULL reference of all commands${R}"
+    echo -e "  gh -a <cmd> <desc>   ${GR}Add Favorite (e.g. gh -a gclean 'Cleanup')${R}"
+    echo -e "  gh -d <cmd>          ${GR}Remove Favorite (e.g. gh -d gclean)${R}"
+    echo -e "  gh -r                ${GR}Reset favorites${R}"
+}
+
+add_fav() {
+    if [[ -z "$1" || -z "$2" ]]; then echo -e "${RED}Error: Missing arguments.${R}"; show_help; exit 1; fi
+    echo "$1|$2|$3" >> "$CONFIG_FILE"
+    echo -e "${G}✔ Added favorite: $1${R}"
+}
+
+del_fav() {
+    if [[ -z "$1" ]]; then echo -e "${RED}Error: Provide command alias to delete.${R}"; exit 1; fi
+    grep -v "^$1|" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    echo -e "${Y}✔ Removed favorite: $1${R}"
+}
+
+reset_defaults() {
+    rm "$CONFIG_FILE"
+    echo -e "${Y}✔ Defaults restored.${R}"
+}
+
+show_full_reference() {
+    clear
+    echo -e "${B}${BL}GIT COMMAND REFERENCE (All available shortcuts)${R}"
+    echo -e "${GR}Type any command with '-h' for help (e.g. 'gs -h' or 'gac -h')${R}\n"
+
+    fmt="  ${G}%-8s${R} | ${W}%-30s${R} | ${GR}%-40s${R}\n"
+
+    # POWER TOOLS
+    echo -e "${B}${M}🚀 POWER TOOLS (Wizards)${R}"
+    echo -e "${GR}--------------------------------------------------------------------------------${R}"
+    printf "$fmt" "gac" "✨ Smart Commit" "~/.local/bin/gac"
+    printf "$fmt" "gsw" "🚀 Branch Switcher" "~/.local/bin/gsw"
+    printf "$fmt" "rsw" "📂 Repo Switcher" "~/.local/bin/rsw"
+    printf "$fmt" "gbd" "🔥 Delete Branch" "~/.local/bin/gbd"
+    printf "$fmt" "grc" "↩️  Undo Commit" "~/.local/bin/grc"
+    printf "$fmt" "gst" "📦 Stash Manager" "~/.local/bin/gst"
+    echo ""
+
+    # CORE FUNCTIONS
+    echo -e "${B}${C}⚡ CORE FUNCTIONS (Smart Aliases)${R}"
+    echo -e "${GR}--------------------------------------------------------------------------------${R}"
+    printf "$fmt" "gs" "Status (Short)" "git status --short"
+    printf "$fmt" "ga" "Add File" "git add <file>"
+    printf "$fmt" "gaa" "Add All" "git add -A"
+    printf "$fmt" "gc" "Commit" "git commit -m"
+    printf "$fmt" "gp" "Push" "git push"
+    printf "$fmt" "gl" "Pull (No Rebase)" "git pull --no-rebase"
+    printf "$fmt" "glo" "Log Graph" "git log --oneline --graph"
+    printf "$fmt" "gd" "Diff" "git diff"
+    printf "$fmt" "gm" "Switch Main & Pull" "git switch main && git pull"
+    printf "$fmt" "gclean" "Cleanup Branches" "git fetch -p && git branch -D..."
+    echo ""
+
+    # EXTRAS
+    echo -e "${B}${W}➕ EXTRAS${R}"
+    echo -e "${GR}--------------------------------------------------------------------------------${R}"
+    printf "$fmt" "g" "Git base command" "git"
+    printf "$fmt" "gpu" "Push Upstream" "git push -u origin <branch>"
+    printf "$fmt" "gcn" "Create New Branch" "git switch -c <name>"
+    echo ""
+    echo -e "${GR}Tip: Add favorites with 'gh -a <cmd> <desc>'${R}"
+}
+
+# --- ARGUMENT HANDLING ---
+case "$1" in
+    -a|--add)    add_fav "$2" "$3" "$4" ;;
+    -d|--del)    del_fav "$2" ;;
+    -r|--reset)  reset_defaults; exit 0 ;;
+    -l|--list)   show_full_reference; exit 0 ;; 
+    -h|--help)   show_help; exit 0 ;;
+esac
+if [ ! -z "$1" ]; then exit 0; fi
+
+# --- RENDER DASHBOARD ---
+clear
+echo -e "${B}${BL}GIT COMMAND CENTER${R}"
+echo -e "${GR}Manage favorites with 'gh -a', see all with 'gh -l'${R}\n"
+fmt="  ${G}%-8s${R} | ${W}%-30s${R} | ${GR}%-40s${R}\n"
+
+echo -e "${B}${M}🚀 POWER TOOLS${R}"
+echo -e "${GR}--------------------------------------------------------------------------------${R}"
+printf "$fmt" "gac" "✨ Smart Commit" "~/.local/bin/gac"
+printf "$fmt" "gsw" "🚀 Branch Switcher" "~/.local/bin/gsw"
+printf "$fmt" "rsw" "📂 Repo Switcher" "~/.local/bin/rsw"
+printf "$fmt" "gbd" "🔥 Delete Branch" "~/.local/bin/gbd"
+printf "$fmt" "grc" "↩️  Undo Commit" "~/.local/bin/grc"
+printf "$fmt" "gst" "📦 Stash Manager" "~/.local/bin/gst"
+echo ""
+
+echo -e "${B}${Y}⭐ FAVORITES${R}"
+echo -e "${GR}--------------------------------------------------------------------------------${R}"
+if [ -s "$CONFIG_FILE" ]; then
+    while IFS='|' read -r cmd desc fullcmd; do
+        [[ -z "$cmd" ]] && continue
+        printf "$fmt" "$cmd" "$desc" "${fullcmd:-$cmd}"
+    done < "$CONFIG_FILE"
+else
+    echo -e "  ${GR}(No favorites yet. Add some with 'gh -a')${R}"
+fi
+echo ""
