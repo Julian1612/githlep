@@ -1,119 +1,38 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------------------
-# GPP - GIT PUSH & PULL REQUEST
+# GBD - GIT BRANCH DELETE
 # ---------------------------------------------------------------------------------------
 
-# --- HELP ---
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    echo -e "\n\033[1mNAME\033[0m\n    gpp - Smart Push & PR Opener\n"
-    echo -e "\033[1mDESCRIPTION\033[0m"
-    echo -e "    1. Pushes current branch to remote."
-    echo -e "    2. If upstream is missing, offers to set it automatically."
-    echo -e "    3. On success, asks to open the 'Create Pull Request' page.\n"
-    echo -e "\033[1mSUPPORTED PROVIDERS\033[0m"
-    echo -e "    GitHub, GitLab, Bitbucket, Azure DevOps\n"
+    echo -e "\n\033[1mNAME\033[0m\n    gbd - Git Branch Delete Wizard\n"
+    echo -e "\033[1mDESCRIPTION\033[0m\n    Select and delete local branches safely."
+    echo -e "    - Excludes current branch and main/master from the list."
+    echo -e "    - Requires confirmation (y/n) before deletion.\n"
     exit 0
 fi
 
-BOLD='\033[1m'; RESET='\033[0m'; GREEN='\033[32m'; CYAN='\033[36m'; RED='\033[31m'; GRAY='\033[90m'; YELLOW='\033[33m'
-
-# --- 1. PRE-CHECKS ---
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    echo -e "${RED}Error: Not a git repository.${RESET}"; exit 1
-fi
-
+BOLD='\033[1m'; RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; WHITE='\033[37m'; GRAY='\033[90m'; CYAN='\033[36m'
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then echo -e "${RED}Error: Not a git repo.${RESET}"; exit 1; fi
 CURRENT_BRANCH=$(git branch --show-current)
-REMOTE="origin" # Default remote
+BRANCHES=(); while IFS= read -r line; do [[ -n "$line" ]] && BRANCHES+=("$line"); done < <(git branch --format='%(refname:short)' | grep -v "^$CURRENT_BRANCH$" | grep -v "^main$" | grep -v "^master$")
+TOTAL=${#BRANCHES[@]}; if [ $TOTAL -eq 0 ]; then echo -e "${GRAY}No deletable branches found.${RESET}"; exit 0; fi
+MAX_VISIBLE=10; SELECTED=0; VIEW_START=0; tput civis; cleanup() { tput cnorm; }; trap cleanup EXIT
 
-echo -e "${BOLD}${WHITE}GIT PUSH & PR${RESET}"
-echo -e "${GRAY}Branch: $CURRENT_BRANCH${RESET}"
-echo -e "${GRAY}----------------------------------------${RESET}"
-
-# --- 2. EXECUTE PUSH ---
-echo -ne "Pushing to $REMOTE... "
-
-# Try push, capture stderr to check for "no upstream" error
-PUSH_OUT=$(git push "$@" 2>&1)
-PUSH_STATUS=$?
-
-if [ $PUSH_STATUS -eq 0 ]; then
-    echo -e "${GREEN}✔ Done${RESET}"
-else
-    # Check if error is "no upstream"
-    if [[ "$PUSH_OUT" == *"set-upstream"* || "$PUSH_OUT" == *"no upstream"* ]]; then
-        echo -e "${YELLOW}⚠ No upstream configured.${RESET}"
-        echo -e "${GRAY}----------------------------------------${RESET}"
-        
-        # Interactive Fix
-        echo -ne "${BOLD}${CYAN}Push and set upstream to '$REMOTE/$CURRENT_BRANCH'? [Y/n]${RESET} "
-        read -rsn1 key_up
-        echo -ne "\r\033[K" # Clear line
-        
-        if [[ "$key_up" == "" || "$key_up" =~ ^[Yy]$ ]]; then
-            echo -ne "Pushing (upstream)... "
-            git push --set-upstream "$REMOTE" "$CURRENT_BRANCH" > /dev/null 2>&1
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}✔ Done${RESET}"
-            else
-                echo -e "${RED}✖ Failed${RESET}"; exit 1
-            fi
-        else
-            echo -e "${RED}✖ Aborted.${RESET}"; exit 1
+while true; do
+    if [ $SELECTED -lt $VIEW_START ]; then VIEW_START=$SELECTED; elif [ $SELECTED -ge $((VIEW_START + MAX_VISIBLE)) ]; then VIEW_START=$((SELECTED - MAX_VISIBLE + 1)); fi
+    echo -ne "\r"; echo -e "${BOLD}${WHITE}DELETE BRANCH${RESET} ${GRAY}(${TOTAL} found)${RESET}\033[K"; echo -e "${GRAY}Current: ${CYAN}${CURRENT_BRANCH}${RESET}\033[K"; echo -e "${GRAY}----------------------------------------${RESET}\033[K"
+    for (( i=0; i<MAX_VISIBLE; i++ )); do
+        IDX=$((VIEW_START + i)); echo -ne "\033[K"
+        if [ $IDX -ge $TOTAL ]; then echo -e ""; else
+            if [ $IDX -eq $SELECTED ]; then echo -e "${RED}${BOLD}  > ${BRANCHES[$IDX]}${RESET}"; else echo -e "    ${BRANCHES[$IDX]}${RESET}"; fi
         fi
-    else
-        # Real error
-        echo -e "${RED}✖ Failed${RESET}"
-        echo "$PUSH_OUT"
-        exit 1
-    fi
-fi
-
-# --- 3. URL CALCULATION ---
-REMOTE_URL=$(git config --get remote.$REMOTE.url)
-if [ -z "$REMOTE_URL" ]; then exit 0; fi # Can't open PR if no remote
-
-# Convert SSH (git@github.com:user/repo.git) to HTTPS (https://github.com/user/repo)
-if [[ "$REMOTE_URL" == git@* ]]; then
-    REMOTE_URL=${REMOTE_URL//:/\/}
-    REMOTE_URL=${REMOTE_URL//git@/https:\/\/}
-fi
-REMOTE_URL=${REMOTE_URL%.git} # Remove .git suffix
-
-# Detect Provider & Build URL
-PR_URL=""
-if [[ "$REMOTE_URL" == *"github.com"* ]]; then
-    # GitHub: /compare/branch?expand=1
-    PR_URL="$REMOTE_URL/compare/$CURRENT_BRANCH?expand=1"
-elif [[ "$REMOTE_URL" == *"gitlab"* ]]; then
-    # GitLab: /merge_requests/new?merge_request[source_branch]=branch
-    PR_URL="$REMOTE_URL/-/merge_requests/new?merge_request[source_branch]=$CURRENT_BRANCH"
-elif [[ "$REMOTE_URL" == *"bitbucket"* ]]; then
-    # Bitbucket: /pull-requests/new?source=branch
-    PR_URL="$REMOTE_URL/pull-requests/new?source=$CURRENT_BRANCH"
-elif [[ "$REMOTE_URL" == *"dev.azure.com"* || "$REMOTE_URL" == *"visualstudio.com"* ]]; then
-    # Azure: /pullrequestcreate?sourceRef=branch
-    PR_URL="$REMOTE_URL/pullrequestcreate?sourceRef=$CURRENT_BRANCH"
-else
-    # Fallback (Just open repo)
-    PR_URL="$REMOTE_URL"
-fi
-
-# --- 4. INTERACTIVE PROMPT ---
-echo -e "${GRAY}----------------------------------------${RESET}"
-echo -ne "${BOLD}${GREEN}Create Pull Request now? [Y/n]${RESET} "
-read -rsn1 key_pr
-
-# Default to YES if Enter is pressed
-if [[ "$key_pr" == "" || "$key_pr" =~ ^[Yy]$ ]]; then
-    echo -ne "\r\033[K"
-    echo -e "${GREEN}✔ Opening browser...${RESET}"
-    
-    # Open Browser (Cross-Platform)
-    if command -v wslview &> /dev/null; then wslview "$PR_URL"
-    elif command -v xdg-open &> /dev/null; then xdg-open "$PR_URL"
-    elif command -v open &> /dev/null; then open "$PR_URL"
-    else echo -e "${RED}Err: No browser opener found.${RESET} URL: $PR_URL"; fi
-else
-    echo -ne "\r\033[K"
-    echo -e "${GRAY}Skipped PR creation.${RESET}"
-fi
+    done
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SELECTED--)); [ $SELECTED -lt 0 ] && SELECTED=$((TOTAL - 1));; '[B') ((SELECTED++)); [ $SELECTED -ge $TOTAL ] && SELECTED=0;; esac; elif [[ $key == "q" ]]; then LINES_TO_CLEAR=$((3 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR; tput ed; exit 0; elif [[ $key == "" ]]; then break; fi
+    LINES_TO_CLEAR=$((3 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR
+done
+LINES_TO_CLEAR=$((3 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR; tput ed; tput cnorm
+BRANCH=${BRANCHES[$SELECTED]}
+echo -ne "${BOLD}${RED}Delete '${WHITE}$BRANCH${RED}'? [y/N]${RESET} "; read -rsn1 confirm
+if [[ "$confirm" =~ ^[Yy]$ ]]; then echo -ne "\r\033[K"; OUT=$(git branch -D "$BRANCH" 2>&1); if [ $? -eq 0 ]; then echo -e "${GREEN}✔ Deleted ${BOLD}$BRANCH${RESET}"; else echo -e "${RED}✖ Failed:${RESET}"; echo "$OUT"; fi
+else echo -ne "\r\033[K"; fi
