@@ -1,0 +1,49 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------------------
+# GAC - GIT ADVANCED COMMIT
+# ---------------------------------------------------------------------------------------
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo -e "\n\033[1mNAME\033[0m\n    gac - Git Advanced Commit Wizard\n"
+    echo -e "\033[1mDESCRIPTION\033[0m\n    Interactive tool to create semantic commits (Conventional Commits)."
+    echo -e "    It implicitly stages all changes (git add -A) before starting."
+    echo -e "    Prompts for Type (feat, fix...), Scope, and Message.\n"
+    exit 0
+fi
+
+BOLD='\033[1m'; RESET='\033[0m'; GREEN='\033[32m'; CYAN='\033[36m'; GRAY='\033[90m'; RED='\033[31m'; WHITE='\033[37m'
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then echo -e "${RED}Error: Not a git repository.${RESET}"; exit 1; fi
+git add -A
+if git diff --cached --quiet; then echo -e "${GRAY}No changes to commit.${RESET}"; exit 0; fi
+
+OPTIONS=("chore" "feat" "fix" "docs" "refactor")
+DESCRIPTIONS=("Maintenance, Tooling" "New feature" "Bug fix" "Documentation" "Code change (no fix/feat)")
+MAX_VISIBLE=10; SELECTED=0; VIEW_START=0; TOTAL=${#OPTIONS[@]}
+tput civis; cleanup() { tput cnorm; }; trap cleanup EXIT
+
+while true; do
+    if [ $SELECTED -lt $VIEW_START ]; then VIEW_START=$SELECTED; elif [ $SELECTED -ge $((VIEW_START + MAX_VISIBLE)) ]; then VIEW_START=$((SELECTED - MAX_VISIBLE + 1)); fi
+    echo -ne "\r"; echo -e "${BOLD}${WHITE}SELECT COMMIT TYPE${RESET} ${GRAY}(Arrows + Enter)${RESET}\033[K"; echo -e "${GRAY}----------------------------------------${RESET}\033[K"
+    for (( i=0; i<MAX_VISIBLE; i++ )); do
+        IDX=$((VIEW_START + i)); echo -ne "\033[K"
+        if [ $IDX -ge $TOTAL ]; then echo -e ""; else
+            if [ $IDX -eq $SELECTED ]; then echo -e "${GREEN}${BOLD}  > ${OPTIONS[$IDX]}${RESET}  ${GRAY}(${DESCRIPTIONS[$IDX]})${RESET}"; else echo -e "    ${OPTIONS[$IDX]}  ${GRAY}(${DESCRIPTIONS[$IDX]})${RESET}"; fi
+        fi
+    done
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SELECTED--)); [ $SELECTED -lt 0 ] && SELECTED=$((TOTAL - 1));; '[B') ((SELECTED++)); [ $SELECTED -ge $TOTAL ] && SELECTED=0;; esac; elif [[ $key == "q" ]]; then LINES_TO_CLEAR=$((2 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR; tput ed; exit 0; elif [[ $key == "" ]]; then break; fi
+    LINES_TO_CLEAR=$((2 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR
+done
+LINES_TO_CLEAR=$((2 + MAX_VISIBLE)); tput cuu $LINES_TO_CLEAR; tput ed; tput cnorm
+TYPE=${OPTIONS[$SELECTED]}; echo -e "${GREEN}✔ Type:${RESET} ${BOLD}$TYPE${RESET}"
+
+echo -ne "${BOLD}${CYAN}Location${RESET} ${GRAY}(optional)${RESET}: "; read location; tput cuu 1; echo -ne "\r\033[K"; if [ -n "$location" ]; then echo -e "${GREEN}✔ Location:${RESET} $location"; fi
+echo -ne "${BOLD}${CYAN}App Name${RESET} ${GRAY}(optional)${RESET}: "; read app; tput cuu 1; echo -ne "\r\033[K"; if [ -n "$app" ]; then echo -e "${GREEN}✔ App:${RESET} $app"; fi
+echo -ne "${BOLD}${CYAN}Message${RESET}: "; read msg; tput cuu 1; echo -ne "\r\033[K"
+if [ -z "$msg" ]; then echo -e "${RED}✖ Error: Commit message empty.${RESET}"; exit 1; fi
+echo -e "${GREEN}✔ Message:${RESET} $msg"
+
+scope=""; if [[ -n "$location" && -n "$app" ]]; then scope="($location/$app)"; elif [[ -n "$location" ]]; then scope="($location)"; elif [[ -n "$app" ]]; then scope="($app)"; fi
+full_msg="${TYPE}${scope}: ${msg}"; echo -e "${GRAY}----------------------------------------${RESET}"
+git commit -m "$full_msg"
