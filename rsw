@@ -212,4 +212,3 @@ while true; do
     if [[ "$key" == "e" || "$key" == "a" || "$key" == "d" ]]; then clear; else tput cuu $LINES; tput ed; fi
 done
 tput cnorm; clear
-
