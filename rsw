@@ -1,0 +1,215 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------------------
+# RSW - REPO MANAGER (Fixed Edit & Label Logic)
+# ---------------------------------------------------------------------------------------
+
+CONFIG_FILE="$HOME/.config/repos.json"
+BOLD='\033[1m'; RESET='\033[0m'; GREEN='\033[32m'; CYAN='\033[36m'; GRAY='\033[90m'; RED='\033[31m'; WHITE='\033[37m'; YELLOW='\033[33m'; MAGENTA='\033[35m'
+
+# --- HELP ---
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo -e "\n${BOLD}NAME${RESET}\n    rsw - Repo Switcher & Manager\n"
+    echo -e "${BOLD}CONTROLS (Inside Menu)${RESET}"
+    echo -e "    ${BOLD}Enter${RESET}   Open selected repository"
+    echo -e "    ${BOLD}e${RESET}       Edit selected repo (Change Name / Label)"
+    echo -e "    ${BOLD}d${RESET}       Delete selected repo"
+    echo -e "    ${BOLD}a${RESET}       Add current directory"
+    echo -e "    ${BOLD}q${RESET}       Quit\n"
+    exit 0
+fi
+
+# --- ENSURE CONFIG ---
+if [ ! -f "$CONFIG_FILE" ]; then echo "[]" > "$CONFIG_FILE"; fi
+
+# --- PYTHON LOGIC (Using sys.argv for safety) ---
+
+PY_LOAD="
+import sys, json
+try:
+    with open(sys.argv[1], 'r') as f: data = json.load(f)
+except: data = []
+search = sys.argv[2].lower()
+results = []
+exact = None
+for r in data:
+    n = r.get('name', ''); p = r.get('path', ''); s = r.get('shortcut', '')
+    if not search or search in n.lower() or search in s.lower() or search in p.lower():
+        # Output: Name|Path|Shortcut
+        results.append(f'{n}|{p}|{s}')
+        if search and s.lower() == search: exact = f'{n}|{p}|{s}'
+if exact: print('DIRECT_JUMP|' + exact)
+else:
+    for res in results: print(res)
+"
+
+PY_ADD="
+import sys, json, os
+config = sys.argv[1]; path = sys.argv[2]; name = sys.argv[3]; sc = sys.argv[4]
+try:
+    with open(config, 'r') as f: d = json.load(f)
+except: d = []
+# Check duplicate
+for i in d:
+    if i['path'] == path: sys.exit(0)
+d.append({'name': name, 'path': path, 'shortcut': sc})
+with open(config, 'w') as f: json.dump(d, f, indent=2)
+"
+
+PY_DEL="
+import sys, json
+config = sys.argv[1]; path = sys.argv[2]
+try:
+    with open(config, 'r') as f: d = json.load(f)
+except: sys.exit(1)
+d = [i for i in d if i['path'] != path]
+with open(config, 'w') as f: json.dump(d, f, indent=2)
+"
+
+PY_EDIT="
+import sys, json
+config = sys.argv[1]; path = sys.argv[2]; new_n = sys.argv[3]; new_s = sys.argv[4]
+try:
+    with open(config, 'r') as f: d = json.load(f)
+except: sys.exit(1)
+found = False
+for i in d:
+    if i['path'] == path:
+        i['name'] = new_n
+        i['shortcut'] = new_s
+        found = True
+        break
+with open(config, 'w') as f: json.dump(d, f, indent=2)
+if found: print('OK')
+else: print('ERR')
+"
+
+# --- CLI ADD MODE (-a) ---
+if [[ "$1" == "-a" || "$1" == "--add" ]]; then
+    echo -ne "${BOLD}${CYAN}Name${RESET} [$(basename "$PWD")]: "; read -r n; NAME="${n:-$(basename "$PWD")}"
+    echo -ne "${BOLD}${CYAN}Label/Shortcut${RESET} (optional): "; read -r s
+    python3 -c "$PY_ADD" "$CONFIG_FILE" "$PWD" "$NAME" "$s"
+    echo -e "${GREEN}✔ Added.${RESET}"; exit 0
+fi
+
+# --- INITIAL LOAD ---
+SEARCH_TERM="$1"
+if [ -n "$SEARCH_TERM" ]; then
+    # Pass arguments explicitly to python
+    CHECK=$(python3 -c "$PY_LOAD" "$CONFIG_FILE" "$SEARCH_TERM")
+    if [[ "$CHECK" == DIRECT_JUMP* ]]; then
+        IFS='|' read -r _ r_name r_path r_short <<< "$CHECK"
+        echo -e "${GREEN}✔ Jump: ${BOLD}$r_name${RESET}"; code -r "$r_path"; exit 0
+    fi
+fi
+
+# --- INTERACTIVE VARS ---
+CURRENT_DIR=$(pwd -P)
+MAX_VISIBLE=10; SELECTED=0; VIEW_START=0
+
+tput civis; cleanup() { tput cnorm; }; trap cleanup EXIT
+
+# --- MAIN LOOP ---
+while true; do
+    # Reload Data
+    mapfile -t REPOS < <(python3 -c "$PY_LOAD" "$CONFIG_FILE" "$SEARCH_TERM")
+    TOTAL=${#REPOS[@]}
+
+    # Viewport Logic
+    if [ $SELECTED -ge $TOTAL ] && [ $TOTAL -gt 0 ]; then SELECTED=$((TOTAL - 1)); fi
+    if [ $SELECTED -lt 0 ]; then SELECTED=0; fi
+    if [ $SELECTED -lt $VIEW_START ]; then VIEW_START=$SELECTED; elif [ $SELECTED -ge $((VIEW_START + MAX_VISIBLE)) ]; then VIEW_START=$((SELECTED - MAX_VISIBLE + 1)); fi
+    
+    TERM_WIDTH=$(tput cols)
+    echo -ne "\r"
+    if [ -z "$SEARCH_TERM" ]; then TITLE="REPO MANAGER"; else TITLE="FILTER: '$SEARCH_TERM'"; fi
+    echo -e "${BOLD}${WHITE}${TITLE}${RESET} ${GRAY}(${TOTAL})${RESET} ${GRAY}[e=Edit, d=Del, a=Add, Enter=Go]${RESET}\033[K"
+    echo -e "${GRAY}----------------------------------------${RESET}\033[K"
+
+    if [ $TOTAL -eq 0 ]; then
+        echo -e "${YELLOW}  No repositories found.${RESET}\033[K"
+        echo -e "${GRAY}  Press 'a' to add current folder.${RESET}\033[K"
+    fi
+
+    for (( i=0; i<MAX_VISIBLE; i++ )); do
+        IDX=$((VIEW_START + i)); echo -ne "\033[K"
+        if [ $IDX -ge $TOTAL ]; then echo -e ""; else
+            IFS='|' read -r r_name r_path r_short <<< "${REPOS[$IDX]}"
+            display_path=$(echo "$r_path" | sed "s|$HOME|~|")
+            
+            # Formatting
+            SC_TXT=""; if [ -n "$r_short" ]; then SC_TXT=" ${MAGENTA}[$r_short]${RESET}"; fi
+            IS_CUR=false; if [[ "$CURRENT_DIR" == "$r_path" ]] || [[ "$CURRENT_DIR" == "$r_path"/* ]]; then IS_CUR=true; fi
+            
+            if [ "$IS_CUR" = true ]; then NAME_DISP="${CYAN}${BOLD}${r_name}${RESET}${SC_TXT} ${CYAN}(Current)${RESET}"; PAD=25
+            else NAME_DISP="${r_name}${SC_TXT}"; PAD=10; fi
+            
+            MAX_LEN=$(( TERM_WIDTH - ${#r_name} - ${#r_short} - PAD ))
+            if [ ${#display_path} -gt $MAX_LEN ] && [ $MAX_LEN -gt 5 ]; then display_path="...${display_path: -$((MAX_LEN-3))}"; fi
+
+            if [ $IDX -eq $SELECTED ]; then echo -e "${GREEN}${BOLD}  > ${NAME_DISP}${RESET} ${GRAY}($display_path)${RESET}"; else echo -e "    ${NAME_DISP} ${GRAY}($display_path)${RESET}"; fi
+        fi
+    done
+
+    # Input Handling
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SELECTED--));; '[B') ((SELECTED++));; esac
+    elif [[ $key == "q" ]]; then break
+    elif [[ $key == "" ]]; then 
+        if [ $TOTAL -gt 0 ]; then
+            IFS='|' read -r s_n s_p s_s <<< "${REPOS[$SELECTED]}"
+            if [ ! -d "$s_p" ]; then tput cnorm; echo -e "\n${RED}Path not found:${RESET} $s_p"; exit 1; fi
+            tput cnorm; echo -e "\n${GREEN}✔ Opening ${BOLD}$s_n${RESET}..."; code -r "$s_p"; exit 0
+        fi
+    
+    # --- ACTION: ADD ---
+    elif [[ $key == "a" ]]; then
+        tput cnorm; echo -ne "\n\033[K${BOLD}${WHITE}ADD CURRENT DIR${RESET}\n\033[K"
+        echo -ne "${CYAN}Name${RESET} [$(basename "$PWD")]: "; read -r input_n; NEW_N="${input_n:-$(basename "$PWD")}"
+        echo -ne "${CYAN}Label/Shortcut${RESET}: "; read -r input_s
+        # Pass arguments correctly
+        python3 -c "$PY_ADD" "$CONFIG_FILE" "$PWD" "$NEW_N" "$input_s"
+        SEARCH_TERM=""; tput civis
+    
+    # --- ACTION: DELETE ---
+    elif [[ $key == "d" ]] && [ $TOTAL -gt 0 ]; then
+        IFS='|' read -r s_n s_p s_s <<< "${REPOS[$SELECTED]}"
+        tput cnorm; echo -ne "\n\033[K${RED}${BOLD}Delete '${WHITE}$s_n${RED}'? [y/N]${RESET} "
+        read -r conf
+        if [[ "$conf" =~ ^[Yy]$ ]]; then 
+             python3 -c "$PY_DEL" "$CONFIG_FILE" "$s_p"
+        fi
+        tput civis
+
+    # --- ACTION: EDIT ---
+    elif [[ $key == "e" ]] && [ $TOTAL -gt 0 ]; then
+        IFS='|' read -r s_n s_p s_s <<< "${REPOS[$SELECTED]}"
+        tput cnorm
+        echo -ne "\n\033[K${BOLD}${WHITE}EDIT REPO${RESET}\n\033[K"
+        
+        # Read with pre-filled values
+        echo -ne "${CYAN}Name${RESET} [${s_n}]: "
+        read -r new_n_in
+        FINAL_NAME="${new_n_in:-$s_n}"
+        
+        echo -ne "${CYAN}Label/Shortcut${RESET} [${s_s}]: "
+        read -r new_s_in
+        # Logic: If user just hits enter, keep old. If user types space/clear, clear it?
+        # Simple logic: Enter keeps value. To clear, user could type specific char, but let's keep it simple.
+        # If user types literally nothing, keep old.
+        FINAL_SHORT="${new_s_in:-$s_s}"
+        
+        # NOTE: To truly allow clearing a label, we'd need a specific trigger. 
+        # For now, if input is '.', we clear it.
+        if [[ "$new_s_in" == "." ]]; then FINAL_SHORT=""; fi
+        
+        # Pass arguments correctly
+        python3 -c "$PY_EDIT" "$CONFIG_FILE" "$s_p" "$FINAL_NAME" "$FINAL_SHORT"
+        tput civis
+    fi
+
+    # Wipe and Loop
+    LINES=$((2 + MAX_VISIBLE)); if [ $TOTAL -eq 0 ]; then LINES=$((LINES+2)); fi
+    if [[ "$key" == "e" || "$key" == "a" || "$key" == "d" ]]; then clear; else tput cuu $LINES; tput ed; fi
+done
+tput cnorm; clear
+
