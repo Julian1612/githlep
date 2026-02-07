@@ -1,58 +1,36 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
-
 CFG="$HOME/.config/git-suite/favorites"
-ALIAS_MAP="$HOME/.config/git-suite/aliases.conf"
 
 if [[ "$1" == "-a" ]]; then
     [ -z "$2" ] && echo "Usage: gh -a <alias> <desc> [cmd]" && exit 1
-    echo "$2|$3|$4" >> "$CFG"
-    echo "${C_SUCCESS}Favorit '$2' gespeichert.${RESET}"; exit 0
+    echo "$2|$3|$4" >> "$CFG"; echo "${C_SUCCESS}Saved.${RESET}"; exit 0
 fi
 
-get_alias() {
-    local script_name="$1"; local default_alias="$2"
-    if [ -f "$ALIAS_MAP" ]; then
-        local found=$(grep "/$script_name$" "$ALIAS_MAP" | cut -d'|' -f1 | head -n1)
-        if [ -z "$found" ]; then
-             found=$(grep "^$script_name|" "$ALIAS_MAP" | cut -d'|' -f1 | head -n1)
-        fi
-        echo "${found:-$default_alias}"
-    else echo "$default_alias"; fi
-}
-
-ui_header "GIT DASHBOARD" "Command Center"
-
-print_row() {
-    local al=$(get_alias "$1" "$2")
-    printf "  ${C_ACCENT}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$al" "$3" "$4"
-}
+ui_header "GIT DASHBOARD" "Suite v2"
+print_row() { printf "  ${C_ACCENT}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$1" "$2" "$3"; }
 print_section() { printf "\n${C_MAIN}${BOLD}%s${RESET}\n" "$1"; }
 
-# --- WORKFLOW ---
 print_section "⚡ WORKFLOW"
-print_row "rsw" "gps" "Repo Manager"      "Projekte wechseln & suchen"
-print_row "gsw" "gsw" "Branch Manager"    "Switch / New / Delete / Rename"
-print_row "gac" "gcw" "Smart Commit"      "Wizard für Conventional Commits"
-print_row "gpp" "gup" "Push & PR"         "Push + Auto-Link zum Pull Request"
+print_row "gps" "Repo Manager"      "Projekte suchen & wechseln"
+print_row "gsw" "Branch Manager"    "Switch / New / Delete / Rename"
+print_row "gcw" "Smart Commit"      "Wizard (Add, Commit, Push)"
 
-# --- MAINTENANCE ---
-print_section "🛠  MAINTENANCE"
-print_row "gst" "gst" "Stash Manager"     "Stashes verwalten & anwenden"
-print_row "grc" "gundo" "Revert Commit"   "Letzte Commits sicher rückgängig machen"
+print_section "🚀 ACTIONS (via gcw)"
+print_row "gup" "Push & PR"         "Direkt Push (gcw -p)"
+print_row "gundo" "Revert"          "Undo Commit (gcw -r)"
 
-# --- EXTRAS ---
-print_section "⚙️  SYSTEM & EXTRAS"
-print_row "gset" "gset" "Settings"        "Aliase, Editor & Theme anpassen"
-print_row "gh"   "gh"   "Dashboard"       "Diese Hilfe anzeigen"
-print_row "gs"   "gs"   "Quick Status"    "Kompakter Git Status"
-print_row "gl"   "gl"   "Smart Pull"      "Pull mit Rebase (Saubere History)"
+print_section "🛠  TOOLS"
+print_row "gst" "Stash Manager"     "Stashes verwalten"
+print_row "gset" "Settings"         "Einstellungen & Aliase"
+print_row "gs" "Status" "Git Status"
+print_row "gl" "Pull" "Git Pull Rebase"
 
 if [ -f "$CFG" ] && [ -s "$CFG" ]; then
-    print_section "🌟 FAVORITEN"
-    while IFS='|' read -r cmd desc full; do
-        [[ -z "$cmd" || "$cmd" =~ ^# ]] && continue
-        printf "  ${C_YELLOW}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$cmd" "$desc" "${full:-Custom Command}"
+    print_section "🌟 FAVORITES"
+    while IFS='|' read -r c d f; do
+        [[ -z "$c" || "$c" =~ ^# ]] && continue
+        printf "  ${C_YELLOW}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$c" "$d" "${f:-Custom}"
     done < "$CFG"
 fi
 printf "\n"

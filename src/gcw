@@ -1,0 +1,115 @@
+#!/bin/bash
+source "$HOME/.local/bin/git-suite-lib.sh"
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "${C_RED}Fehler: Kein Git-Repository.${RESET}"
+    exit 1
+fi
+
+# --- HELP ---
+show_help() {
+    ui_header "GCW MANUAL" "Git Commit Wizard"
+    printf "${C_MAIN}${BOLD}USAGE${RESET}\n"
+    printf "  ${C_ACCENT}gcw${RESET}          Wizard (Add, Commit, Push-Check)\n"
+    printf "  ${C_ACCENT}gcw -p${RESET}       Push & PR (alias: gup)\n"
+    printf "  ${C_ACCENT}gcw -r${RESET}       Revert (alias: gundo)\n"
+    printf "  ${C_ACCENT}gcw -h${RESET}       Hilfe\n\n"
+    exit 0
+}
+
+# --- PUSH LOGIC ---
+do_push() {
+    CB=$(git branch --show-current)
+    tput cnorm
+    printf "\n${C_ACCENT}Pushing '$CB'...${RESET} "
+    if OUT=$(git push 2>&1); then
+        printf "${C_GREEN}✔ Done${RESET}\n"
+    else
+        if [[ "$OUT" == *"upstream"* ]]; then
+            printf "${C_YELLOW}⚠ No upstream.${RESET}\nSet upstream? [Y/n] "; read -r y
+            [[ "$y" =~ ^[Yy]?$ ]] && git push -u origin "$CB" && printf "${C_GREEN}✔ Done${RESET}\n" || exit 1
+        else
+            printf "\n${C_RED}Failed:${RESET}\n$OUT\n"; exit 1
+        fi
+    fi
+    # PR Link
+    U=$(git config remote.origin.url)
+    [[ "$U" == git@* ]] && U=${U//:/\/} && U=${U//git@/https:\/\/}
+    U=${U%.git}
+    LINK=""
+    [[ "$U" == *github* ]] && LINK="$U/compare/$CB?expand=1"
+    [[ "$U" == *gitlab* ]] && LINK="$U/-/merge_requests/new?merge_request[source_branch]=$CB"
+    if [ -n "$LINK" ]; then
+        printf "${C_GREEN}Open PR? [Y/n]${RESET} "; read -rsn1 k; printf "\n"
+        [[ "$k" =~ ^[Yy]?$ ]] && (open "$LINK" || wslview "$LINK" || xdg-open "$LINK") 2>/dev/null
+    fi
+}
+
+# --- REVERT LOGIC ---
+do_revert() {
+    C=(); while IFS= read -r line; do C+=("$line"); done < <(git log --pretty=format:"%h|%s|%cr" -n 50)
+    TOT=${#C[@]}; [ $TOT -eq 0 ] && echo "Keine Commits." && exit 0
+    SEL=0; VS=0; MAX=10
+    tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+    while true; do
+        [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+        ui_header "REVERT COMMIT" "Select to Undo"
+        for (( i=0; i<MAX; i++ )); do
+            IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
+            parse_line "${C[$IDX]}"; S="false"; [ $IDX -eq $SEL ] && S="true"
+            ui_item "$P1 $P2" "$P3" "$S" "false"
+        done
+        read -rsn1 key
+        if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+        elif [[ $key == "" ]]; then
+            parse_line "${C[$SEL]}"; tput cnorm
+            printf "\n${C_DANGER}Revert '$P2'? [y/N]${RESET} "; read -r y
+            [[ "$y" =~ ^[Yy]$ ]] && git revert --no-edit "$P1" && printf "${C_SUCCESS}✔ Reverted.${RESET}\n" && exit 0
+            tput civis
+        elif [[ $key == "q" ]]; then exit 0; fi
+        [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
+    done
+}
+
+# --- COMMIT LOGIC ---
+do_commit() {
+    git add -A
+    if git diff --cached --quiet; then
+        echo "${C_MUTED}No changes.${RESET}"; printf "Push anyway? [y/N] "; read -r y
+        [[ "$y" =~ ^[Yy]$ ]] && do_push; exit 0
+    fi
+    OPT=("feat" "fix" "chore" "docs" "refactor" "style" "test")
+    DESC=("Feature" "Bug Fix" "Maintenance" "Docs" "Refactor" "Style" "Tests")
+    SEL=0; TOT=${#OPT[@]}
+    tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+    while true; do
+        ui_header "COMMIT TYPE" "Select"
+        for (( i=0; i<TOT; i++ )); do
+            S="false"; [ $i -eq $SEL ] && S="true"
+            ui_item "${OPT[$i]}" "${DESC[$i]}" "$S" "false"
+        done
+        read -rsn1 key
+        if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+        elif [[ $key == "" ]]; then break
+        elif [[ $key == "q" ]]; then exit 0; fi
+        [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
+    done
+    tput cnorm; TYPE=${OPT[$SEL]}
+    ui_header "COMMIT MESSAGE" "$TYPE"
+    printf "${C_ACCENT}Scope${RESET} (opt): "; read -r s
+    printf "${C_ACCENT}Message${RESET}: "; read -r m
+    [ -z "$m" ] && echo "${C_DANGER}Empty message.${RESET}" && exit 1
+    FULL="$TYPE"; [ -n "$s" ] && FULL+="($s)"; FULL+=": $m"
+    printf "\n${C_MUTED}Committing...${RESET}\n"
+    if git commit -m "$FULL"; then
+        printf "\n${C_TITLE}Push? [y/N]${RESET} "; read -r y
+        [[ "$y" =~ ^[Yy]$ ]] && do_push
+    fi
+}
+
+case "$1" in
+    -p|--push) do_push ;;
+    -r|--revert|--undo) do_revert ;;
+    -h|--help) show_help ;;
+    *) do_commit ;;
+esac
