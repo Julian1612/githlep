@@ -2,89 +2,73 @@
 set -e
 
 # ==============================================================================
-#  GIT PROFESSIONAL SUITE INSTALLER
-#  Syncs files from this repository to your system.
+#  GIT SUITE INSTALLER (FINAL ROBUST VERSION)
 # ==============================================================================
 
-# --- CONFIGURATION ---
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
-CONFIG_DIR="$HOME/.config/git-suite"
+CONF_DIR="$HOME/.config/git-suite"
+LOADER_SCRIPT="$CONF_DIR/loader.sh"
+RC_FILE="$HOME/.zshrc"
+[ ! -f "$RC_FILE" ] && RC_FILE="$HOME/.bashrc"
 
-# Installer-only colors
-B='\033[1;34m'; G='\033[0;32m'; Y='\033[1;33m'; N='\033[0m'
+G='\033[0;32m'; B='\033[1;34m'; N='\033[0m'
 
-echo -e "${B}🚀 SYNCING GIT SUITE...${N}"
+echo -e "${B}🚀 Installiere Git Suite...${N}"
 
-# 1. VALIDATION
-if [ ! -d "$REPO_ROOT/src" ] || [ ! -d "$REPO_ROOT/lib" ]; then
-    echo -e "${Y}Error: Run this script from the repository root.${N}"
-    echo "Expected folders 'src' and 'lib' not found."
-    exit 1
-fi
-
-# 2. CREATE DIRECTORIES
 mkdir -p "$BIN_DIR"
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONF_DIR"
 
-# 3. INSTALL SHARED LIBRARY
-echo -ne "Updating Library... "
+# 1. Dateien kopieren
+echo -ne "Kopiere Skripte... "
 cp "$REPO_ROOT/lib/git-suite-lib.sh" "$BIN_DIR/"
-chmod +x "$BIN_DIR/git-suite-lib.sh"
-echo -e "${G}✔${N}"
+cp "$REPO_ROOT/src/"* "$BIN_DIR/"
+chmod +x "$BIN_DIR/"*
+echo -e "${G}Fertig${N}"
 
-# 4. INSTALL TOOLS
-# Iterates through everything in src/ and copies it to bin/
-for tool in "$REPO_ROOT/src"/*; do
-    tool_name=$(basename "$tool")
-    echo -ne "Updating $tool_name... "
-    cp "$tool" "$BIN_DIR/$tool_name"
-    chmod +x "$BIN_DIR/$tool_name"
-    echo -e "${G}✔${N}"
-done
-
-# 5. INITIALIZE CONFIG (Only if missing)
-# We do NOT overwrite existing configs to preserve your customization.
-if [ ! -f "$CONFIG_DIR/aliases.conf" ]; then
-    echo -e "${B}Creating default aliases...${N}"
-    cat <<EOF > "$CONFIG_DIR/aliases.conf"
+# 2. Config initialisieren (Falls fehlt)
+if [ ! -f "$CONF_DIR/aliases.conf" ]; then
+    echo "Erstelle Standard-Aliase..."
+    cat <<EOF > "$CONF_DIR/aliases.conf"
 gh|Dashboard|~/.local/bin/gh
-gcw|Smart Commit|~/.local/bin/gac
+gset|Einstellungen|~/.local/bin/gset
 gps|Repo Switcher|~/.local/bin/rsw
 gsw|Branch Switcher|~/.local/bin/gsw
-gup|Smart Push|~/.local/bin/gpp
-gbx|Branch Delete|~/.local/bin/gbd
+gcw|Smart Commit|~/.local/bin/gac
+gup|Push & PR|~/.local/bin/gpp
 gst|Stash Manager|~/.local/bin/gst
-gundo|Revert|~/.local/bin/grc
+gbx|Branch Delete|~/.local/bin/gbd
+gundo|Revert Commit|~/.local/bin/grc
 gs|Status|git status -s
-gl|Pull (Rebase)|git pull --rebase
+gl|Pull|git pull --rebase
 EOF
 fi
 
-if [ ! -f "$CONFIG_DIR/repos.json" ]; then
-    echo "[]" > "$CONFIG_DIR/repos.json"
-fi
+# 3. Loader Script generieren (MIT UNALIAS FIX)
+echo "# GIT SUITE LOADER" > "$LOADER_SCRIPT"
+echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$LOADER_SCRIPT"
 
-# 6. SHELL INTEGRATION
-# Ensures the aliases are loaded in zshrc/bashrc
-RC="$HOME/.zshrc"
-[ ! -f "$RC" ] && RC="$HOME/.bashrc"
-if ! grep -q "git_functions.zsh" "$RC"; then
-    echo -e "\n# GIT SUITE" >> "$RC"
-    echo "[ -f ~/.git_functions.zsh ] && source ~/.git_functions.zsh" >> "$RC"
-    echo -e "${G}Linked in $RC${N}"
-fi
+# Lade auch Settings falls vorhanden
+[ -f "$CONF_DIR/settings.conf" ] && cat "$CONF_DIR/settings.conf" >> "$LOADER_SCRIPT"
 
-# 7. APPLY CHANGES
-# Regenerate the alias function file immediately based on current config
-echo -ne "Applying Aliases... "
-if [ -x "$BIN_DIR/gset" ]; then
-    # We pipe 'q' to gset to make it generate the alias file and exit immediately
-    "$BIN_DIR/gset" <<< "q" >/dev/null 2>&1 || true
-    echo -e "${G}✔${N}"
+while IFS='|' read -r short name cmd; do
+    [[ "$short" =~ ^#.* || -z "$short" ]] && continue
+    # Der Konflikt-Fix:
+    echo "unalias $short >/dev/null 2>&1" >> "$LOADER_SCRIPT"
+    echo "alias $short='$cmd'" >> "$LOADER_SCRIPT"
+done < "$CONF_DIR/aliases.conf"
+
+chmod +x "$LOADER_SCRIPT"
+
+# 4. Shell Verknüpfung
+echo -ne "Verknüpfe mit $RC_FILE... "
+if ! grep -q "git-suite/loader.sh" "$RC_FILE"; then
+    echo "" >> "$RC_FILE"
+    echo "[ -f \"$LOADER_SCRIPT\" ] && source \"$LOADER_SCRIPT\"" >> "$RC_FILE"
+    echo -e "${G}Hinzugefügt${N}"
 else
-    echo -e "${Y}Skipped (gset not found)${N}"
+    echo -e "${B}Bereits aktiv${N}"
 fi
 
-echo -e "\n${B}✅ UPDATE COMPLETE.${N}"
-echo -e "Restart your terminal to see changes."
+echo -e "\n${G}✅ SYSTEM AKTUALISIERT.${N}"
+echo -e "Deine Quell-Dateien sind jetzt auf dem neuesten Stand."

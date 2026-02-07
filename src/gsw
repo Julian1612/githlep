@@ -1,34 +1,77 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
-! git rev-parse --is-inside-work-tree >/dev/null 2>&1 && echo "${C_DANGER}Not a git repo.${RESET}" && exit 1
-CUR=$(git branch --show-current)
-ALL=$(git branch --format='%(refname:short)'); BRS=()
-for p in "main" "master" "dev"; do echo "$ALL" | grep -q "^$p$" && BRS+=("$p"); done
-while read l; do [[ -n "$l" && ! " ${BRS[*]} " =~ " ${l} " ]] && BRS+=("$l"); done <<< "$ALL"
-TOT=${#BRS[@]}; SEL=0; VS=0; MAX=10
-for i in "${!BRS[@]}"; do [[ "${BRS[$i]}" != "$CUR" ]] && SEL=$i && break; done
 
+# 1. PRÜFUNG: Sind wir in einem Git Repo?
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "${C_RED}Fehler: Kein Git-Repository.${RESET}"
+    exit 1
+fi
+
+CUR=$(git branch --show-current)
+
+# 2. BRANCHES EINLESEN (Robust & Sicher)
+BRS=()
+# Priorisierte Branches
+for priority in "main" "master" "dev" "development"; do
+    if git show-ref --verify --quiet "refs/heads/$priority"; then
+        [ "$priority" != "$CUR" ] && BRS+=("$priority")
+    fi
+done
+
+# Restliche Branches
+RAW_BRANCHES=$(git branch --format='%(refname:short)')
+while IFS= read -r branch; do
+    [ -z "$branch" ] && continue
+    [ "$branch" == "$CUR" ] && continue
+    [[ " ${BRS[*]} " =~ " ${branch} " ]] && continue
+    BRS+=("$branch")
+done <<< "$RAW_BRANCHES"
+
+TOT=${#BRS[@]}
+
+# 3. FALLS KEINE ANDEREN BRANCHES DA SIND
+if [ "$TOT" -eq 0 ]; then
+    echo "${C_YELLOW}Keine anderen Branches gefunden.${RESET}"
+    echo "Du bist bereits auf: ${C_GREEN}$CUR${RESET}"
+    exit 0
+fi
+
+# 4. UI LOOP
+SEL=0; VS=0; MAX=10
 tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+
 while true; do
-    [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
-    ui_header "SWITCH BRANCH" "$CUR"
+    [ $SEL -lt $VS ] && VS=$SEL
+    [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+
+    ui_header "SWITCH BRANCH" "Aktuell: $CUR"
+
     for (( i=0; i<MAX; i++ )); do
         IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
-        BN="${BRS[$IDX]}"; SEL_BOOL="false"; [ $IDX -eq $SEL ] && SEL_BOOL="true"
-        CUR_BOOL="false"; [ "$BN" == "$CUR" ] && CUR_BOOL="true"
+        BN="${BRS[$IDX]}"
+        SEL_BOOL="false"; [ $IDX -eq $SEL ] && SEL_BOOL="true"
         LABEL="$BN"
-        [[ "$BN" =~ ^(main|master)$ ]] && LABEL="${C_MAIN}${BOLD}⚡ $BN${RESET}"
-        ui_item "$LABEL" "" "$SEL_BOOL" "$CUR_BOOL"
+        [[ "$BN" =~ ^(main|master)$ ]] && LABEL="${C_TITLE}⚡ $BN${RESET}"
+        ui_item "$LABEL" "" "$SEL_BOOL" "false"
     done
+    
     printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
-    printf "${C_MUTED} [Enter] Switch  [n] New Branch  [q] Quit${RESET}"
+    printf "${C_MUTED} [Enter] Wechseln  [n] Neu  [q] Ende${RESET}"
     
     read -rsn1 key
-    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
     elif [[ $key == "" ]]; then
-        T="${BRS[$SEL]}"; [ "$T" == "$CUR" ] && continue
-        tput cnorm; printf "\n${C_ACCENT}Switching to $T...${RESET}\n"
-        if git switch "$T"; then git_smart_pull; exit 0; else exit 1; fi
-    elif [[ $key == "n" ]]; then tput cnorm; printf "\n${C_ACCENT}New Branch:${RESET} "; read -r n; [ -n "$n" ] && git switch -c "$n" && exit 0
+        TARGET="${BRS[$SEL]}"
+        if [ -z "$TARGET" ]; then exit 0; fi # Safety Check
+        tput cnorm; printf "\n${C_ACCENT}Wechsle zu: $TARGET${RESET}\n"
+        git switch "$TARGET" && exit 0
+        exit 1
+    elif [[ $key == "n" ]]; then
+        tput cnorm; printf "\n${C_TITLE}Neuer Branch:${RESET} "; read -r n
+        [ -n "$n" ] && git switch -c "$n" && exit 0
+        tput civis
     elif [[ $key == "q" ]]; then exit 0; fi
+    
+    [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
 done
