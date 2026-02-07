@@ -1,0 +1,19 @@
+#!/bin/bash
+source "$HOME/.local/bin/git-suite-lib.sh"
+while true; do
+    S=(); while IFS= read -r line; do S+=("$line"); done < <(git stash list --format="%gd|%s|%cr")
+    TOT=${#S[@]}
+    ui_header "STASH MANAGER" "$TOT Stashes"
+    printf "  ${C_SUCCESS}+ Create New${RESET}\n"
+    for (( i=0; i<TOT; i++ )); do
+        parse_line "${S[$i]}"; ui_item "$P1: $P2" "$P3" "false" "false"
+    done
+    printf "\n[0-$((TOT-1))] Action, [+] New, [q] Quit: "
+    read -r a; [ "$a" == "q" ] && exit 0
+    if [ "$a" == "+" ]; then printf "Message: "; read -r m; git stash push -m "$m"; continue; fi
+    if [[ "$a" =~ ^[0-9]+$ ]]; then
+        printf "1) Apply  2) Drop: "; read -r s
+        case $s in 1) git stash apply "stash@{$a}";; 2) git stash drop "stash@{$a}";; esac
+        read -rsn1 -p "Done."
+    fi
+done

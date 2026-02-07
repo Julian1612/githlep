@@ -1,0 +1,22 @@
+#!/bin/bash
+source "$HOME/.local/bin/git-suite-lib.sh"
+C=(); while IFS= read -r line; do C+=("$line"); done < <(git log --pretty=format:"%h|%s|%cr" -n 50)
+TOT=${#C[@]}; SEL=0; VS=0; MAX=10
+tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+while true; do
+    [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+    ui_header "REVERT COMMIT" "Last 50"
+    for (( i=0; i<MAX; i++ )); do
+        IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
+        parse_line "${C[$IDX]}"; SEL_BOOL="false"; [ $IDX -eq $SEL ] && SEL_BOOL="true"
+        ui_item "$P1 $P2" "$P3" "$SEL_BOOL" "false"
+    done
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+    elif [[ $key == "" ]]; then
+        parse_line "${C[$SEL]}"
+        tput cnorm; printf "\n${C_DANGER}Revert '$P2'? [y/N]${RESET} "; read -r y
+        [[ "$y" =~ ^[Yy]$ ]] && git revert --no-edit "$P1"
+        exit 0
+    elif [[ $key == "q" ]]; then exit 0; fi
+done

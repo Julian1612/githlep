@@ -1,0 +1,23 @@
+#!/bin/bash
+source "$HOME/.local/bin/git-suite-lib.sh"
+CUR=$(git branch --show-current)
+BRS=(); while read l; do [[ -n "$l" ]] && BRS+=("$l"); done < <(git branch --format='%(refname:short)' | grep -vE "^($CUR|main|master)$")
+TOT=${#BRS[@]}; [ $TOT -eq 0 ] && echo "No deletable branches." && exit 0
+SEL=0; VS=0; MAX=10
+tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+while true; do
+    ui_header "DELETE BRANCH" "$TOT found"
+    for (( i=0; i<MAX; i++ )); do
+        IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
+        SEL_BOOL="false"; [ $IDX -eq $SEL ] && SEL_BOOL="true"
+        ui_item "${BRS[$IDX]}" "" "$SEL_BOOL" "false"
+    done
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac;
+    elif [[ $key == "" ]]; then
+        tput cnorm; T="${BRS[$SEL]}"
+        printf "\n${C_DANGER}Delete '$T'? [y/N]${RESET} "; read -r y
+        [[ "$y" =~ ^[Yy]$ ]] && git branch -D "$T"
+        exit 0
+    elif [[ $key == "q" ]]; then exit 0; fi
+done

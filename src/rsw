@@ -1,0 +1,68 @@
+#!/bin/bash
+source "$HOME/.local/bin/git-suite-lib.sh"
+CFG="$HOME/.config/git-suite/repos.json"
+
+# Python Logic (Minified)
+PY_L="import sys,json; s=sys.argv[2].lower(); 
+try: d=json.load(open(sys.argv[1]))
+except: d=[]
+res=[]; ex=None
+for r in d:
+ n=r.get('name',''); p=r.get('path',''); sc=r.get('shortcut','')
+ line=f'{n}|{p}|{sc}'
+ if not s or s in n.lower() or s in sc.lower(): res.append(line)
+ if s and sc.lower()==s: ex=line
+if ex: print('JUMP|'+ex)
+else:
+ for x in res: print(x)"
+PY_A="import sys,json; c,p,n,s=sys.argv[1:5]; d=json.load(open(c)); d.append({'name':n,'path':p,'shortcut':s}); json.dump(d,open(c,'w'),indent=2)"
+PY_D="import sys,json; c,p=sys.argv[1:3]; d=[i for i in json.load(open(c)) if i['path']!=p]; json.dump(d,open(c,'w'),indent=2)"
+PY_E="import sys,json; c,p,n,s=sys.argv[1:5]; d=json.load(open(c)); 
+for i in d: 
+ if i['path']==p: i['name']=n; i['shortcut']=s
+json.dump(d,open(c,'w'),indent=2)"
+
+if [[ "$1" == "-a" ]]; then
+    ui_header "ADD REPO" "$PWD"
+    printf "${C_ACCENT}Name${RESET} [$(basename "$PWD")]: "; read -r n; n="${n:-$(basename "$PWD")}"
+    printf "${C_ACCENT}Shortcut${RESET}: "; read -r s
+    python3 -c "$PY_A" "$CFG" "$PWD" "$n" "$s"
+    printf "${C_SUCCESS}✔ Saved.${RESET}\n"; exit 0
+fi
+
+if [ -n "$1" ]; then
+    OUT=$(python3 -c "$PY_L" "$CFG" "$1")
+    if [[ "$OUT" == JUMP* ]]; then parse_line "${OUT#JUMP|*}"; printf "${C_SUCCESS}✔ Jumping to $P1${RESET}\n"; code -r "$P2"; exit 0; fi
+fi
+
+PWD_CUR=$(pwd -P); MAX=10; SEL=0; VS=0
+tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+while true; do
+    REPOS=(); while IFS= read -r line; do REPOS+=("$line"); done < <(python3 -c "$PY_L" "$CFG" "$S")
+    TOT=${#REPOS[@]}
+    [ $SEL -ge $TOT ] && SEL=$((TOT-1)); [ $SEL -lt 0 ] && SEL=0
+    [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+
+    ui_header "REPO MANAGER" "$TOT Repos"
+    [ $TOT -eq 0 ] && printf "\n  ${C_WARN}Database empty.${RESET}\n  ${C_MUTED}Press 'a' to add current folder.${RESET}\n"
+
+    for (( i=0; i<MAX; i++ )); do
+        IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
+        parse_line "${REPOS[$IDX]}"
+        LABEL="$P1"; [ -n "$P3" ] && LABEL="$P1 ${C_ACCENT}[$P3]${RESET}"
+        CUR="false"; [[ "$PWD_CUR" == "$P2"* ]] && CUR="true"
+        SEL_BOOL="false"; [ $IDX -eq $SEL ] && SEL_BOOL="true"
+        ui_item "$LABEL" "$P2" "$SEL_BOOL" "$CUR"
+    done
+    
+    printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
+    printf "${C_MUTED} [Enter] Open  [a] Add  [e] Edit  [d] Delete  [q] Quit${RESET}"
+
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+    elif [[ $key == "" && $TOT -gt 0 ]]; then parse_line "${REPOS[$SEL]}"; tput cnorm; printf "\n${C_SUCCESS}Opening...${RESET}\n"; code -r "$P2"; exit 0
+    elif [[ $key == "a" ]]; then tput cnorm; ui_header "ADD REPO" ""; printf "${C_ACCENT}Name${RESET} [$(basename "$PWD_CUR")]: "; read -r n; n="${n:-$(basename "$PWD_CUR")}"; printf "${C_ACCENT}Shortcut${RESET}: "; read -r s; python3 -c "$PY_A" "$CFG" "$PWD_CUR" "$n" "$s"; tput civis
+    elif [[ $key == "d" && $TOT -gt 0 ]]; then parse_line "${REPOS[$SEL]}"; tput cnorm; printf "\n${C_DANGER}Delete '$P1'? [y/N]${RESET} "; read -r y; [[ "$y" =~ ^[Yy]$ ]] && python3 -c "$PY_D" "$CFG" "$P2"; tput civis
+    elif [[ $key == "e" && $TOT -gt 0 ]]; then parse_line "${REPOS[$SEL]}"; tput cnorm; printf "\nName [$P1]: "; read -r n; printf "Shortcut [$P3]: "; read -r s; python3 -c "$PY_E" "$CFG" "$P2" "${n:-$P1}" "${s:-$P3}"; tput civis
+    elif [[ $key == "q" ]]; then exit 0; fi
+done

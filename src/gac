@@ -1,0 +1,30 @@
+#!/bin/bash
+source "$HOME/.local/bin/git-suite-lib.sh"
+! git rev-parse --is-inside-work-tree >/dev/null 2>&1 && exit 1
+git add -A
+if git diff --cached --quiet; then echo "${C_MUTED}No changes.${RESET}"; exit 0; fi
+
+OPT=("feat" "fix" "chore" "docs" "refactor" "style" "test")
+DESC=("New feature" "Bug fix" "Maintenance" "Documentation" "Refactoring" "Formatting" "Tests")
+SEL=0; VS=0; MAX=10; TOT=${#OPT[@]}
+tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+
+while true; do
+    ui_header "COMMIT TYPE" "Select"
+    for (( i=0; i<TOT; i++ )); do
+        SEL_BOOL="false"; [ $i -eq $SEL ] && SEL_BOOL="true"
+        ui_item "${OPT[$i]}" "${DESC[$i]}" "$SEL_BOOL" "false"
+    done
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac; [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
+    elif [[ $key == "" ]]; then break
+    elif [[ $key == "q" ]]; then exit 0; fi
+done
+tput cnorm
+TYPE=${OPT[$SEL]}
+ui_header "COMMIT MESSAGE" "$TYPE"
+printf "${C_ACCENT}Scope${RESET} (optional): "; read -r s
+printf "${C_ACCENT}Message${RESET}: "; read -r m
+[ -z "$m" ] && echo "${C_DANGER}Empty message.${RESET}" && exit 1
+FULL="$TYPE"; [ -n "$s" ] && FULL+="($s)"; FULL+=": $m"
+printf "\n${C_MUTED}Committing...${RESET}\n"; git commit -m "$FULL"

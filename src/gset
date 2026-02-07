@@ -1,0 +1,188 @@
+#!/bin/bash
+# Load Lib but prevent user theme from overriding our local variables during init
+PREVIEW_MODE="true"
+source "$HOME/.local/bin/git-suite-lib.sh"
+mkdir -p "$CONFIG_DIR"
+ALIAS_CONF="$CONFIG_DIR/aliases.conf"
+
+# --- THEME CUSTOMIZER ENGINE ---
+theme_customizer() {
+    local SEL=0
+    local OPTS=("Border Color" "Title Color" "Selection Color" "Text Color" "Box Style" "Prompt Symbol" "💾 APPLY & SAVE" "↩  Cancel")
+    
+    # Load current values into local temporary variables
+    local T_BORDER=$C_BORDER_IDX
+    local T_TITLE=$C_TITLE_IDX
+    local T_SEL=$C_SEL_IDX
+    local T_TEXT=$C_TEXT_IDX
+    local T_STYLE="$UI_STYLE"
+    local T_PROMPT="$UI_PROMPT"
+    
+    # Styles & Prompts Arrays
+    local STYLES=("rounded" "double" "heavy" "single" "ascii")
+    local PROMPTS=("❯" "➜" "➤" "»" "●" "★" "⚡" "->")
+    
+    # Current indices for style/prompt arrays
+    local S_IDX=0; for i in "${!STYLES[@]}"; do [[ "${STYLES[$i]}" == "$T_STYLE" ]] && S_IDX=$i; done
+    local P_IDX=0; for i in "${!PROMPTS[@]}"; do [[ "${PROMPTS[$i]}" == "$T_PROMPT" ]] && P_IDX=$i; done
+
+    # Helper for Color Names
+    get_cname() { 
+        local c=$1
+        case $c in 
+            0) echo "${BOLD}Black${RESET}" ;; 1) echo "${C_RED}Red${RESET}" ;; 2) echo "${C_GREEN}Green${RESET}" ;; 
+            3) echo "${C_YELLOW}Yellow${RESET}" ;; 4) echo "${tput setaf 4}Blue${RESET}" ;; 5) echo "${tput setaf 5}Magenta${RESET}" ;; 
+            6) echo "${tput setaf 6}Cyan${RESET}" ;; 7) echo "${BOLD}White${RESET}" ;; 
+        esac 
+    }
+
+    while true; do
+        # 1. LIVE APPLY: Update library variables directly
+        C_BORDER_IDX=$T_BORDER
+        C_TITLE_IDX=$T_TITLE
+        C_SEL_IDX=$T_SEL
+        C_TEXT_IDX=$T_TEXT
+        UI_STYLE="$T_STYLE"
+        UI_PROMPT="$T_PROMPT"
+        
+        # 2. RECALCULATE TPUT COLORS (Manual refresh without re-sourcing file)
+        C_BORDER=$(tput setaf "$C_BORDER_IDX")
+        C_TITLE=$(tput setaf "$C_TITLE_IDX")
+        C_SEL=$(tput setaf "$C_SEL_IDX")
+        C_TEXT=$(tput setaf "$C_TEXT_IDX")
+        
+        # 3. RENDER UI
+        ui_header "THEME CREATOR" "Live Preview"
+        
+        # Render Options
+        for (( i=0; i<${#OPTS[@]}; i++ )); do
+            local S="false"; [ $i -eq $SEL ] && S="true"
+            local VAL=""
+            
+            case $i in
+                0) VAL=$(get_cname $T_BORDER) ;;
+                1) VAL=$(get_cname $T_TITLE) ;;
+                2) VAL=$(get_cname $T_SEL) ;;
+                3) VAL=$(get_cname $T_TEXT) ;;
+                4) VAL="$T_STYLE" ;;
+                5) VAL="$T_PROMPT" ;;
+            esac
+            
+            ui_item "${OPTS[$i]}" "$VAL" "$S" "false"
+        done
+        
+        printf "\n${C_MUTED} Use LEFT/RIGHT arrows to adjust. ENTER to select.${RESET}"
+
+        # 4. INPUT HANDLING
+        read -rsn1 k
+        if [[ $k == $'\x1b' ]]; then read -rsn2 k2
+            case "$k2" in 
+                '[A') ((SEL--));; '[B') ((SEL++));;
+                '[C') # RIGHT -> Next
+                    case $SEL in
+                        0) T_BORDER=$(( (T_BORDER + 1) % 8 )) ;;
+                        1) T_TITLE=$(( (T_TITLE + 1) % 8 )) ;;
+                        2) T_SEL=$(( (T_SEL + 1) % 8 )) ;;
+                        3) T_TEXT=$(( (T_TEXT + 1) % 8 )) ;;
+                        4) S_IDX=$(( (S_IDX + 1) % ${#STYLES[@]} )); T_STYLE="${STYLES[$S_IDX]}" ;;
+                        5) P_IDX=$(( (P_IDX + 1) % ${#PROMPTS[@]} )); T_PROMPT="${PROMPTS[$P_IDX]}" ;;
+                    esac ;;
+                '[D') # LEFT -> Prev
+                    case $SEL in
+                        0) T_BORDER=$(( (T_BORDER - 1 + 8) % 8 )) ;;
+                        1) T_TITLE=$(( (T_TITLE - 1 + 8) % 8 )) ;;
+                        2) T_SEL=$(( (T_SEL - 1 + 8) % 8 )) ;;
+                        3) T_TEXT=$(( (T_TEXT - 1 + 8) % 8 )) ;;
+                        4) S_IDX=$(( (S_IDX - 1 + ${#STYLES[@]}) % ${#STYLES[@]} )); T_STYLE="${STYLES[$S_IDX]}" ;;
+                        5) P_IDX=$(( (P_IDX - 1 + ${#PROMPTS[@]}) % ${#PROMPTS[@]} )); T_PROMPT="${PROMPTS[$P_IDX]}" ;;
+                    esac ;;
+            esac
+        elif [[ $k == "" ]]; then
+            if [ $SEL -eq 6 ]; then # SAVE
+                cat <<EOF > "$THEME_CONF"
+C_BORDER_IDX=$T_BORDER
+C_TITLE_IDX=$T_TITLE
+C_SEL_IDX=$T_SEL
+C_TEXT_IDX=$T_TEXT
+C_MUTED_IDX=8
+UI_STYLE="$T_STYLE"
+UI_PROMPT="$T_PROMPT"
+EOF
+                tput cnorm; echo "${C_GREEN}✔ Theme Saved.${RESET}"; sleep 0.5; return
+            elif [ $SEL -eq 7 ]; then return; fi # CANCEL
+        fi
+        
+        # Loop Bounds
+        [ $SEL -lt 0 ] && SEL=$(( ${#OPTS[@]} - 1 ))
+        [ $SEL -ge ${#OPTS[@]} ] && SEL=0
+    done
+}
+
+# --- ALIAS WIZARD ---
+alias_wizard() {
+    local SEL=0
+    while true; do
+        local LINES=(); if [ -f "$ALIAS_CONF" ]; then while IFS= read -r line; do [[ "$line" =~ ^#.* || -z "$line" ]] && continue; LINES+=("$line"); done < "$ALIAS_CONF"; fi
+        local MENU_OPTS=("${LINES[@]}" "✚  Add New Alias" "↩  Back")
+        local TOTAL_OPTS=${#MENU_OPTS[@]}; local TOTAL=${#LINES[@]}
+        
+        ui_header "ALIAS MANAGER" "$TOTAL Shortcuts"
+        for (( i=0; i<TOTAL_OPTS; i++ )); do
+            local S="false"; [ $i -eq $SEL ] && S="true"
+            if [ $i -lt $TOTAL ]; then parse_line "${MENU_OPTS[$i]}"; ui_item "$P1" "$P2" "$S" "false"; 
+            else ui_item "${MENU_OPTS[$i]}" "" "$S" "false"; fi
+        done
+        
+        read -rsn1 k
+        if [[ $k == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+        elif [[ $k == "" ]]; then
+            if [ $SEL -eq $((TOTAL+1)) ]; then return; fi # Back
+            if [ $SEL -eq $TOTAL ]; then
+                ui_input "Alias (e.g. 'gp'):"; NEW_SHORT="${VAL// /}"; [ -z "$NEW_SHORT" ] && continue
+                ui_input "Name (e.g. 'Push'):"; NEW_NAME="$VAL"
+                ui_input "Command:"; NEW_CMD="$VAL"
+                if [ -n "$NEW_CMD" ]; then echo "$NEW_SHORT|$NEW_NAME|$NEW_CMD" >> "$ALIAS_CONF"; fi; continue
+            fi
+            # Delete Logic
+            local LINE="${LINES[$SEL]}"
+            tput cnorm; printf "\n${C_RED}Delete alias? [y/N]${RESET} "; read -r y
+            if [[ "$y" =~ ^[Yy]$ ]]; then grep -vF "$LINE" "$ALIAS_CONF" > "${ALIAS_CONF}.tmp" && mv "${ALIAS_CONF}.tmp" "$ALIAS_CONF"; fi
+            tput civis
+        elif [[ $k == "q" ]]; then exit 0; fi
+        [ $SEL -lt 0 ] && SEL=$((TOTAL_OPTS-1)); [ $SEL -ge $TOTAL_OPTS ] && SEL=0
+    done
+    
+    # Reload Shell Aliases
+    OUT="$HOME/.git_functions.zsh"; echo "# GIT SUITE ALIASES" > "$OUT"; echo "if [[ \":\$PATH:\" != *\":$HOME/.local/bin:\"* ]]; then export PATH=\"\$HOME/.local/bin:\$PATH\"; fi" >> "$OUT"
+    while IFS='|' read -r alias name cmd; do [[ "$alias" =~ ^#.* || -z "$alias" ]] && continue; echo "alias $alias='$cmd'" >> "$OUT"; done < "$ALIAS_CONF"
+}
+
+# --- MAIN SETTINGS LOOP ---
+SEL=0
+OPTS=("Theme & Styling" "Alias Manager" "Editor Setup" "Git Identity" "GitHub Auth" "Quit")
+DESC=("Colors, Boxes, Symbols" "Edit Shortcuts" "Vim/Nano/Code" "Name & Email" "Login" "Exit")
+
+tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+while true; do
+    ui_header "SETTINGS" "v9.0"
+    for (( i=0; i<${#OPTS[@]}; i++ )); do
+        S="false"; [ $i -eq $SEL ] && S="true"
+        ui_item "${OPTS[$i]}" "${DESC[$i]}" "$S" "false"
+    done
+    
+    read -rsn1 k
+    if [[ $k == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+    elif [[ $k == "" ]]; then
+        case $SEL in
+            0) theme_customizer ;;
+            1) alias_wizard ;;
+            2) ui_input "Editor (vim/nano/code):"; [ -n "$VAL" ] && echo "GIT_EDITOR='$VAL'" > "$SETTINGS_CONF" ;;
+            3) CUR_N=$(git config --global user.name); ui_input "Name [$CUR_N]:"; [ -n "$VAL" ] && git config --global user.name "$VAL"; CUR_E=$(git config --global user.email); ui_input "Email [$CUR_E]:"; [ -n "$VAL" ] && git config --global user.email "$VAL" ;;
+            4) if gh auth status >/dev/null 2>&1; then echo "${C_GREEN}Logged in.${RESET}"; sleep 1; else gh auth login; fi ;;
+            5) exit 0 ;;
+        esac
+        # Reload lib to restore theme after submenu return
+        source "$HOME/.local/bin/git-suite-lib.sh"
+    elif [[ $k == "q" ]]; then exit 0; fi
+    [ $SEL -lt 0 ] && SEL=5; [ $SEL -gt 5 ] && SEL=0
+done
