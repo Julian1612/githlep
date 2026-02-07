@@ -1,77 +1,151 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
 
-# 1. PRÜFUNG: Sind wir in einem Git Repo?
+# --- GIT CHECK ---
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "${C_RED}Fehler: Kein Git-Repository.${RESET}"
     exit 1
 fi
 
-CUR=$(git branch --show-current)
+# --- AUTO UPDATE (Prune) ---
+# Bereinigt veraltete Remote-Branches beim Start
+printf "${C_MUTED}Refreshing repo...${RESET}"
+git fetch --prune >/dev/null 2>&1
 
-# 2. BRANCHES EINLESEN (Robust & Sicher)
-BRS=()
-# Priorisierte Branches
-for priority in "main" "master" "dev" "development"; do
-    if git show-ref --verify --quiet "refs/heads/$priority"; then
-        [ "$priority" != "$CUR" ] && BRS+=("$priority")
-    fi
-done
+# --- STATE VARIABLES ---
+SEL=0
+VS=0
+MAX=10
 
-# Restliche Branches
-RAW_BRANCHES=$(git branch --format='%(refname:short)')
-while IFS= read -r branch; do
-    [ -z "$branch" ] && continue
-    [ "$branch" == "$CUR" ] && continue
-    [[ " ${BRS[*]} " =~ " ${branch} " ]] && continue
-    BRS+=("$branch")
-done <<< "$RAW_BRANCHES"
-
-TOT=${#BRS[@]}
-
-# 3. FALLS KEINE ANDEREN BRANCHES DA SIND
-if [ "$TOT" -eq 0 ]; then
-    echo "${C_YELLOW}Keine anderen Branches gefunden.${RESET}"
-    echo "Du bist bereits auf: ${C_GREEN}$CUR${RESET}"
-    exit 0
-fi
-
-# 4. UI LOOP
-SEL=0; VS=0; MAX=10
-tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
-
+# --- MAIN LOOP (Lädt Daten bei jeder Änderung neu) ---
 while true; do
-    [ $SEL -lt $VS ] && VS=$SEL
-    [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
-
-    ui_header "SWITCH BRANCH" "Aktuell: $CUR"
-
-    for (( i=0; i<MAX; i++ )); do
-        IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
-        BN="${BRS[$IDX]}"
-        SEL_BOOL="false"; [ $IDX -eq $SEL ] && SEL_BOOL="true"
-        LABEL="$BN"
-        [[ "$BN" =~ ^(main|master)$ ]] && LABEL="${C_TITLE}⚡ $BN${RESET}"
-        ui_item "$LABEL" "" "$SEL_BOOL" "false"
+    CUR=$(git branch --show-current)
+    
+    # 1. BRANCHES LADEN
+    BRS=()
+    # Priorisierte Branches nach oben
+    for priority in "main" "master" "dev" "development"; do
+        if git show-ref --verify --quiet "refs/heads/$priority"; then
+            [ "$priority" != "$CUR" ] && BRS+=("$priority")
+        fi
     done
     
-    printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
-    printf "${C_MUTED} [Enter] Wechseln  [n] Neu  [q] Ende${RESET}"
+    # Restliche Branches
+    RAW=$(git branch --format='%(refname:short)')
+    while IFS= read -r b; do
+        [ -z "$b" ] && continue
+        [ "$b" == "$CUR" ] && continue
+        [[ " ${BRS[*]} " =~ " ${b} " ]] && continue
+        BRS+=("$b")
+    done <<< "$RAW"
     
-    read -rsn1 key
-    if [[ $key == $'\x1b' ]]; then
-        read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
-    elif [[ $key == "" ]]; then
-        TARGET="${BRS[$SEL]}"
-        if [ -z "$TARGET" ]; then exit 0; fi # Safety Check
-        tput cnorm; printf "\n${C_ACCENT}Wechsle zu: $TARGET${RESET}\n"
-        git switch "$TARGET" && exit 0
-        exit 1
-    elif [[ $key == "n" ]]; then
-        tput cnorm; printf "\n${C_TITLE}Neuer Branch:${RESET} "; read -r n
-        [ -n "$n" ] && git switch -c "$n" && exit 0
-        tput civis
-    elif [[ $key == "q" ]]; then exit 0; fi
+    TOT=${#BRS[@]}
     
-    [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
+    # Selection Bounds Check (falls Branches gelöscht wurden)
+    [ $SEL -ge $TOT ] && SEL=$((TOT-1))
+    [ $SEL -lt 0 ] && SEL=0
+    
+    # --- UI LOOP ---
+    tput civis
+    cleanup(){ tput cnorm; }; trap cleanup EXIT
+    
+    while true; do
+        # Scroll Logic
+        [ $SEL -lt $VS ] && VS=$SEL
+        [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+
+        ui_header "BRANCH MANAGER" "Aktuell: $CUR"
+
+        # Liste zeichnen
+        if [ $TOT -eq 0 ]; then
+            printf "  ${C_MUTED}(Keine anderen Branches)${RESET}\n"
+        else
+            for (( i=0; i<MAX; i++ )); do
+                IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
+                BN="${BRS[$IDX]}"
+                S_BOOL="false"; [ $IDX -eq $SEL ] && S_BOOL="true"
+                
+                LABEL="$BN"
+                [[ "$BN" =~ ^(main|master)$ ]] && LABEL="${C_TITLE}⚡ $BN${RESET}"
+                ui_item "$LABEL" "" "$S_BOOL" "false"
+            done
+        fi
+        
+        printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
+        printf "${C_MUTED} [Enter] Switch  [n] New  [d] Delete  [r] Rename  [q] Quit${RESET}"
+
+        read -rsn1 key
+        
+        # --- ACTIONS ---
+        if [[ $key == $'\x1b' ]]; then
+            read -rsn2 k2
+            case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+            # Bounds Check Loop
+            [ $SEL -lt 0 ] && SEL=$((TOT-1))
+            [ $SEL -ge $TOT ] && SEL=0
+            
+        elif [[ $key == "" ]]; then
+            # SWITCH
+            [ $TOT -eq 0 ] && continue
+            TARGET="${BRS[$SEL]}"
+            tput cnorm; printf "\n${C_ACCENT}Wechsle zu: $TARGET${RESET}\n"
+            git switch "$TARGET" && exit 0
+            exit 1
+            
+        elif [[ $key == "n" ]]; then
+            # NEW
+            tput cnorm; printf "\n${C_TITLE}Neuer Branch:${RESET} "; read -r n
+            if [ -n "$n" ]; then
+                git switch -c "$n" && exit 0
+            fi
+            tput civis
+            
+        elif [[ $key == "d" ]]; then
+            # DELETE
+            [ $TOT -eq 0 ] && continue
+            TARGET="${BRS[$SEL]}"
+            
+            # Schutz für Main/Master
+            if [[ "$TARGET" =~ ^(main|master)$ ]]; then
+                tput cnorm; printf "\n${C_WARN}Kann '$TARGET' nicht löschen.${RESET}"; sleep 1; tput civis; continue
+            fi
+            
+            tput cnorm
+            printf "\n${C_DANGER}Lösche '$TARGET'? [y/N]${RESET} "
+            read -r y
+            if [[ "$y" =~ ^[Yy]$ ]]; then
+                # Löschen versuchen und Output prüfen
+                if OUT=$(git branch -D "$TARGET" 2>&1); then
+                     printf "${C_GREEN}✔ Gelöscht.${RESET}\n"
+                     sleep 0.5
+                else
+                     printf "${C_RED}Fehler:${RESET}\n%s\n" "$OUT"
+                     read -rsn1 -p "Taste drücken..."
+                fi
+                break # UI Loop verlassen -> Branch-Liste neu laden!
+            fi
+            tput civis
+            
+        elif [[ $key == "r" ]]; then
+            # RENAME
+            [ $TOT -eq 0 ] && continue
+            TARGET="${BRS[$SEL]}"
+            tput cnorm
+            printf "\n${C_ACCENT}Umbenennen '$TARGET' zu:${RESET} "
+            read -r new_name
+            if [ -n "$new_name" ]; then
+                if git branch -m "$TARGET" "$new_name"; then
+                    printf "${C_GREEN}✔ Umbenannt.${RESET}\n"
+                    sleep 0.5
+                    break # Reload List
+                else
+                    read -rsn1 -p "Taste drücken..."
+                fi
+            fi
+            tput civis
+
+        elif [[ $key == "q" ]]; then
+            exit 0
+        fi
+    done
 done

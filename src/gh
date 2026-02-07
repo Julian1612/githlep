@@ -1,33 +1,58 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
+
 CFG="$HOME/.config/git-suite/favorites"
 ALIAS_MAP="$HOME/.config/git-suite/aliases.conf"
 
 if [[ "$1" == "-a" ]]; then
     [ -z "$2" ] && echo "Usage: gh -a <alias> <desc> [cmd]" && exit 1
     echo "$2|$3|$4" >> "$CFG"
-    echo "${C_SUCCESS}Added favorite '$2'${RESET}"; exit 0
+    echo "${C_SUCCESS}Favorit '$2' gespeichert.${RESET}"; exit 0
 fi
 
-ui_header "GIT DASHBOARD" "My Suite"
-fmt=" %-8s ${C_MUTED}|${RESET} %-30s ${C_MUTED}|${RESET} %s\n"
-
 get_alias() {
-    local tool="$1"; local default="$2"
+    local script_name="$1"; local default_alias="$2"
     if [ -f "$ALIAS_MAP" ]; then
-        found=$(grep "$tool" "$ALIAS_MAP" | cut -d'|' -f1 | head -n1)
-        echo "${found:-$default}"
-    else echo "$default"; fi
+        local found=$(grep "/$script_name$" "$ALIAS_MAP" | cut -d'|' -f1 | head -n1)
+        if [ -z "$found" ]; then
+             found=$(grep "^$script_name|" "$ALIAS_MAP" | cut -d'|' -f1 | head -n1)
+        fi
+        echo "${found:-$default_alias}"
+    else echo "$default_alias"; fi
 }
 
-printf "${C_MAIN}${BOLD} SUITE TOOLS${RESET}\n"
-printf "$fmt" "$(get_alias "rsw" "gps")" "Repo Manager" "Project Switcher"
-printf "$fmt" "$(get_alias "gsw" "gsw")" "Branch Manager" "Smart Switch"
-printf "$fmt" "$(get_alias "gac" "gcw")" "Smart Commit" "Wizard"
-printf "$fmt" "$(get_alias "gpp" "gup")" "Push & PR" "Auto-Opener"
-printf "$fmt" "gset" "Settings" "${BOLD}Customize Suite${RESET}"
+ui_header "GIT DASHBOARD" "Command Center"
 
-printf "\n${C_WARN}${BOLD} FAVORITES${RESET}\n"
-[ -f "$CFG" ] && while IFS='|' read -r cmd desc full; do
-    [ -n "$cmd" ] && printf "$fmt" "$cmd" "$desc" "${full:-$cmd}"
-done < "$CFG"
+print_row() {
+    local al=$(get_alias "$1" "$2")
+    printf "  ${C_ACCENT}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$al" "$3" "$4"
+}
+print_section() { printf "\n${C_MAIN}${BOLD}%s${RESET}\n" "$1"; }
+
+# --- WORKFLOW ---
+print_section "⚡ WORKFLOW"
+print_row "rsw" "gps" "Repo Manager"      "Projekte wechseln & suchen"
+print_row "gsw" "gsw" "Branch Manager"    "Switch / New / Delete / Rename"
+print_row "gac" "gcw" "Smart Commit"      "Wizard für Conventional Commits"
+print_row "gpp" "gup" "Push & PR"         "Push + Auto-Link zum Pull Request"
+
+# --- MAINTENANCE ---
+print_section "🛠  MAINTENANCE"
+print_row "gst" "gst" "Stash Manager"     "Stashes verwalten & anwenden"
+print_row "grc" "gundo" "Revert Commit"   "Letzte Commits sicher rückgängig machen"
+
+# --- EXTRAS ---
+print_section "⚙️  SYSTEM & EXTRAS"
+print_row "gset" "gset" "Settings"        "Aliase, Editor & Theme anpassen"
+print_row "gh"   "gh"   "Dashboard"       "Diese Hilfe anzeigen"
+print_row "gs"   "gs"   "Quick Status"    "Kompakter Git Status"
+print_row "gl"   "gl"   "Smart Pull"      "Pull mit Rebase (Saubere History)"
+
+if [ -f "$CFG" ] && [ -s "$CFG" ]; then
+    print_section "🌟 FAVORITEN"
+    while IFS='|' read -r cmd desc full; do
+        [[ -z "$cmd" || "$cmd" =~ ^# ]] && continue
+        printf "  ${C_YELLOW}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$cmd" "$desc" "${full:-Custom Command}"
+    done < "$CFG"
+fi
+printf "\n"
