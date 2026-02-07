@@ -1,71 +1,40 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
-
-# --- KONFIGURATION ---
 CONF_DIR="$HOME/.config/git-suite"
 ALIAS_CONF="$CONF_DIR/aliases.conf"
-LOADER_SCRIPT="$CONF_DIR/loader.sh"
-SETTINGS_CONF="$CONF_DIR/settings.conf"
+LOADER="$CONF_DIR/loader.sh"
+SETTINGS="$CONF_DIR/settings.conf"
+mkdir -p "$CONF_DIR"; touch "$SETTINGS"
 
-mkdir -p "$CONF_DIR"
-touch "$SETTINGS_CONF"
-
-# --- FUNKTION: Loader Generieren (MIT UNALIAS FIX) ---
 update_loader() {
-    echo "# GIT SUITE LOADER - AUTO GENERATED" > "$LOADER_SCRIPT"
-    echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$LOADER_SCRIPT"
-    
-    # 1. Einstellungen laden
-    if [ -f "$SETTINGS_CONF" ]; then
-        cat "$SETTINGS_CONF" >> "$LOADER_SCRIPT"
-    fi
-
-    # 2. Aliase schreiben (Mit Konflikt-Schutz!)
+    echo "# GIT SUITE LOADER" > "$LOADER"
+    echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$LOADER"
+    [ -f "$SETTINGS" ] && cat "$SETTINGS" >> "$LOADER"
     if [ -f "$ALIAS_CONF" ]; then
         while IFS='|' read -r short name cmd; do
-            [[ "$short" =~ ^#.* || -z "$short" ]] && continue
-            # FIX: Erst unalias, damit wir Vorrang vor oh-my-zsh haben
-            echo "unalias $short >/dev/null 2>&1" >> "$LOADER_SCRIPT"
-            echo "alias $short='$cmd'" >> "$LOADER_SCRIPT"
+            [[ "$short" =~ ^# || -z "$short" ]] && continue
+            echo "unalias $short >/dev/null 2>&1" >> "$LOADER"
+            echo "alias $short='$cmd'" >> "$LOADER"
         done < "$ALIAS_CONF"
     fi
-    
-    chmod +x "$LOADER_SCRIPT"
-    
-    echo "${C_GREEN}✔ Aliase & Loader aktualisiert.${RESET}"
-    echo "${C_MUTED}Änderungen sind beim nächsten Terminal-Start aktiv.${RESET}"
+    chmod +x "$LOADER"
+    echo "${C_GREEN}✔ Reloaded.${RESET}"
 }
 
-# --- CONTROL CENTER LOOP ---
 while true; do
-    ui_header "GSET CONTROL CENTER" "Einstellungen"
-    
-    echo "  ${C_ACCENT}1)${RESET} Aliase neu laden (Reparieren)"
-    echo "  ${C_ACCENT}2)${RESET} Aliase bearbeiten"
-    echo "  ${C_ACCENT}3)${RESET} Standard-Editor setzen"
-    echo "  ${C_ACCENT}4)${RESET} Git User (Name/Email) ändern"
-    echo "  ${C_ACCENT}q)${RESET} Beenden"
-    echo ""
-    printf "Auswahl: "
-    read -rsn1 key
-
+    ui_header "SETTINGS" "Control Center"
+    echo "  ${C_ACCENT}1)${RESET} Repair Aliases (Reload)"
+    echo "  ${C_ACCENT}2)${RESET} Edit Aliases"
+    echo "  ${C_ACCENT}3)${RESET} Set Editor"
+    echo "  ${C_ACCENT}4)${RESET} Git User"
+    echo "  ${C_ACCENT}q)${RESET} Quit"
+    printf "\nSelect: "; read -rsn1 key
     case "$key" in
-        1) 
-            tput cnorm; echo ""; update_loader
-            read -rsn1 -p "Drücke eine Taste..."; tput civis ;;
-        2) 
-            tput cnorm; ${GIT_EDITOR:-nano} "$ALIAS_CONF"
-            update_loader; tput civis ;;
-        3) 
-            ui_input "Editor (z.B. code, vim, nano):"
-            if [ -n "$VAL" ]; then
-                echo "export GIT_EDITOR='$VAL'" > "$SETTINGS_CONF"
-                echo "${C_GREEN}Gespeichert.${RESET}"; sleep 1
-            fi ;;
-        4)
-            echo ""; echo "Aktuell: $(git config --global user.name) <$(git config --global user.email)>"
-            ui_input "Neuer Name (Enter = überspringen):"; [ -n "$VAL" ] && git config --global user.name "$VAL"
-            ui_input "Neue Email (Enter = überspringen):"; [ -n "$VAL" ] && git config --global user.email "$VAL" ;;
+        1) tput cnorm; echo ""; update_loader; sleep 1; tput civis ;;
+        2) tput cnorm; ${GIT_EDITOR:-nano} "$ALIAS_CONF"; update_loader; tput civis ;;
+        3) ui_input "Editor:"; [ -n "$VAL" ] && echo "export GIT_EDITOR='$VAL'" > "$SETTINGS";;
+        4) ui_input "Name:"; [ -n "$VAL" ] && git config --global user.name "$VAL";
+           ui_input "Email:"; [ -n "$VAL" ] && git config --global user.email "$VAL" ;;
         q) exit 0 ;;
     esac
 done
