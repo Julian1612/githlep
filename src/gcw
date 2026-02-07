@@ -9,17 +9,19 @@ fi
 # --- HELP ---
 show_help() {
     ui_header "GCW MANUAL" "Git Commit Wizard"
-    printf "${C_MAIN}${BOLD}WORKFLOW${RESET}\n"
-    printf "  1. Wähle Dateien mit ${C_ACCENT}Space${RESET} (Markieren mit [x])\n"
-    printf "  2. Prüfe Änderungen mit ${C_ACCENT}Enter${RESET} (Diff View)\n"
-    printf "  3. Drücke ${C_ACCENT}c${RESET} zum Committen\n\n"
+    printf "${C_MAIN}${BOLD}USAGE${RESET}\n"
+    printf "  ${C_ACCENT}gcw${RESET}          Wizard (Review -> Commit -> Push)\n"
+    printf "  ${C_ACCENT}gcw -p${RESET}       Push & PR (alias: gup)\n"
+    printf "  ${C_ACCENT}gcw -r${RESET}       Revert (alias: gundo)\n"
+    printf "  ${C_ACCENT}gcw -h${RESET}       Hilfe\n\n"
     exit 0
 }
 
 # --- PUSH LOGIC ---
 do_push() {
     CB=$(git branch --show-current)
-    tput cnorm; printf "\n${C_ACCENT}Pushing '$CB'...${RESET} "
+    tput cnorm
+    printf "\n${C_ACCENT}Pushing '$CB'...${RESET} "
     if OUT=$(git push 2>&1); then
         printf "${C_GREEN}✔ Done${RESET}\n"
     else
@@ -59,112 +61,89 @@ do_revert() {
         read -rsn1 key
         if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
         elif [[ $key == "" ]]; then
-            parse_line "${C[$SEL]}"; tput cnorm; printf "\n${C_DANGER}Revert '$P2'? [y/N]${RESET} "; read -r y
+            parse_line "${C[$SEL]}"; tput cnorm
+            printf "\n${C_DANGER}Revert '$P2'? [y/N]${RESET} "; read -r y
             [[ "$y" =~ ^[Yy]$ ]] && git revert --no-edit "$P1" && printf "${C_SUCCESS}✔ Reverted.${RESET}\n" && exit 0
             tput civis
         elif [[ $key == "q" ]]; then exit 0; fi
-        # FIX: Bounds Check direkt nach Input
         [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
     done
 }
 
-# --- STAGE MANAGER ---
-stage_manager() {
+# --- FILE REVIEW LOGIC (NEW) ---
+review_changes() {
+    # Hole Liste der gestagten Dateien
+    FILES=()
+    while IFS= read -r file; do FILES+=("$file"); done < <(git diff --cached --name-only)
+    TOT=${#FILES[@]}
+    
     SEL=0; VS=0; MAX=10
     
     while true; do
-        FILES=(); STATUSES=()
-        RAW_STATUS=$(git status --porcelain)
+        [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
         
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            XY=${line:0:2}
-            FILE_PATH=${line:3}
-            FILES+=("$FILE_PATH"); STATUSES+=("$XY")
-        done <<< "$RAW_STATUS"
-        
-        TOT=${#FILES[@]}
-        if [ $TOT -eq 0 ]; then
-            tput cnorm; echo "${C_MUTED}Nothing to commit.${RESET}"; exit 0
-        fi
-
-        # FIX: Bounds Check MUSS vor der Scroll-Berechnung (VS) passieren!
-        [ $SEL -ge $TOT ] && SEL=$((TOT-1))
-        [ $SEL -lt 0 ] && SEL=0
-
-        # Scroll Logic
-        [ $SEL -lt $VS ] && VS=$SEL
-        [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
-        
-        ui_header "FILE MANAGER" "$TOT Files Changed"
+        ui_header "REVIEW CHANGES" "$TOT Files Staged"
         
         for (( i=0; i<MAX; i++ )); do
             IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
-            F="${FILES[$IDX]}"; ST="${STATUSES[$IDX]}"; X=${ST:0:1}
-            
-            if [[ "$X" != " " && "$X" != "?" ]]; then ICON="${C_GREEN}[x]${RESET}"; else ICON="${C_MUTED}[ ]${RESET}"; fi
+            FILE="${FILES[$IDX]}"
             S="false"; [ $IDX -eq $SEL ] && S="true"
             
-            if [ "$S" == "true" ]; then printf " ${C_SEL}❯ %s ${C_SEL}%-30s${RESET}\n" "$ICON" "$F"
-            else printf "   %s %-30s\n" "$ICON" "$F"; fi
+            # Status ermitteln (M=Modified, A=Added, D=Deleted)
+            STAT=$(git diff --cached --name-status "$FILE" | cut -c1)
+            case "$STAT" in
+                "A") DESC="${C_GREEN}New File${RESET}" ;;
+                "M") DESC="${C_ACCENT}Modified${RESET}" ;;
+                "D") DESC="${C_RED}Deleted${RESET}" ;;
+                *)   DESC="${C_MUTED}Changed${RESET}" ;;
+            esac
+            
+            ui_item "$FILE" "$DESC" "$S" "false"
         done
         
         printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
-        printf "${C_MUTED} [Space] Toggle  [Enter] Diff  [c] Commit  [q] Quit${RESET}"
+        printf "${C_MUTED} [Enter] View Diff  [c] Commit  [q] Abort${RESET}"
         
-        IFS= read -rsn1 key
+        read -rsn1 key
         if [[ $key == $'\x1b' ]]; then
-             read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
-             # FIX: Bounds Check hier für direkten Wrap-Around (optional, aber sicher)
-             [ $SEL -lt 0 ] && SEL=$((TOT-1))
-             [ $SEL -ge $TOT ] && SEL=0
-             
-        elif [[ $key == " " ]]; then
-            F="${FILES[$SEL]}"; ST="${STATUSES[$SEL]}"; X=${ST:0:1}
-            if [[ "$X" != " " && "$X" != "?" ]]; then git restore --staged "$F" >/dev/null 2>&1
-            else git add "$F" >/dev/null 2>&1; fi
-        elif [[ $key == "" ]]; then
-            F="${FILES[$SEL]}"; ST="${STATUSES[$SEL]}"; X=${ST:0:1}
-            tput cnorm; 
-            if [[ "$X" != " " && "$X" != "?" ]]; then git diff --cached --color "$F" | less -R
-            else git diff --color "$F" | less -R; fi
-            tput civis
+            read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
         elif [[ $key == "c" ]]; then
-            if git diff --cached --quiet; then
-                tput cnorm; printf "\n${C_WARN}Nothing staged.${RESET}\n"; sleep 1; tput civis
-            else return 0; fi
-        elif [[ $key == "q" ]]; then tput cnorm; exit 0; fi
+            return 0 # Proceed to commit
+        elif [[ $key == "q" ]]; then
+            tput cnorm; echo ""; exit 0
+        elif [[ $key == "" ]]; then
+            # VIEW DIFF
+            FILE="${FILES[$SEL]}"
+            tput cnorm
+            # Use git diff with color and less for scrolling
+            git diff --cached --color "$FILE" | less -R
+            tput civis
+        fi
+        
+        [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
     done
 }
 
-# --- COMMIT WIZARD ---
+# --- COMMIT LOGIC ---
 do_commit() {
-    tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+    # 1. Alles stagen
+    git add -A
     
-    # 1. Dateien auswählen
-    stage_manager
-    
-    # 2. Branch Check
-    CB=$(git branch --show-current)
-    ui_header "TARGET BRANCH" "$CB"
-    if [[ "$CB" =~ ^(main|master)$ ]]; then INFO="${C_YELLOW}⚠ Protected Branch${RESET}"; else INFO="${C_MUTED}Feature Branch${RESET}"; fi
-    printf "  ${C_ACCENT}[Enter]${RESET} Commit to '$CB' ($INFO)\n"
-    printf "  ${C_ACCENT}[b]${RESET}     Create New Branch\n"
-    
-    read -rsn1 key
-    if [[ $key == "b" || $key == "n" ]]; then
-        tput cnorm; printf "\n${C_TITLE}New Branch Name:${RESET} "; read -r nb
-        if [ -n "$nb" ]; then
-            if git switch -c "$nb"; then printf "${C_GREEN}✔ Switched to '$nb'${RESET}\n"; sleep 0.5
-            else echo "${C_RED}Error creating branch.${RESET}"; exit 1; fi
-        fi
-        tput civis
+    # 2. Check ob leer
+    if git diff --cached --quiet; then
+        echo "${C_MUTED}No changes.${RESET}"; printf "Push anyway? [y/N] "; read -r y
+        [[ "$y" =~ ^[Yy]$ ]] && do_push; exit 0
     fi
     
-    # 3. Type Selection
+    # 3. REVIEW CHANGES (NEU!)
+    tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
+    review_changes
+    
+    # 4. Select Type
     OPT=("feat" "fix" "chore" "docs" "refactor" "style" "test")
     DESC=("Feature" "Bug Fix" "Maintenance" "Docs" "Refactor" "Style" "Tests")
     SEL=0; TOT=${#OPT[@]}
+    
     while true; do
         ui_header "COMMIT TYPE" "Select"
         for (( i=0; i<TOT; i++ )); do
@@ -175,19 +154,18 @@ do_commit() {
         if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
         elif [[ $key == "" ]]; then break
         elif [[ $key == "q" ]]; then exit 0; fi
-        # FIX: Bounds Check
         [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
     done
     tput cnorm; TYPE=${OPT[$SEL]}
     
-    # 4. Message
+    # 5. Message
     ui_header "COMMIT MESSAGE" "$TYPE"
     printf "${C_ACCENT}Scope${RESET} (opt): "; read -r s
     printf "${C_ACCENT}Message${RESET}: "; read -r m
     [ -z "$m" ] && echo "${C_DANGER}Empty message.${RESET}" && exit 1
     FULL="$TYPE"; [ -n "$s" ] && FULL+="($s)"; FULL+=": $m"
     
-    # 5. Commit & Push
+    # 6. Commit & Push
     printf "\n${C_MUTED}Committing...${RESET}\n"
     if git commit -m "$FULL"; then
         printf "\n${C_TITLE}Push? [y/N]${RESET} "; read -r y
