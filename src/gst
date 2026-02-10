@@ -1,19 +1,149 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
-while true; do
-    S=(); while IFS= read -r line; do S+=("$line"); done < <(git stash list --format="%gd|%s|%cr")
-    TOT=${#S[@]}
-    ui_header "STASH MANAGER" "$TOT Stashes"
-    printf "  ${C_SUCCESS}+ Create New${RESET}\n"
-    for (( i=0; i<TOT; i++ )); do
-        parse_line "${S[$i]}"; ui_item "$P1: $P2" "$P3" "false" "false"
+
+# --- GIT CHECK ---
+check_git
+
+# --- ACTIONS ---
+create_stash() {
+    ui_input "Message (optional)" "WIP"; local msg="$VAL"
+    cursor_on
+    printf "\n${C_ACCENT}Stashing...${RESET}\n"
+    if git stash push -m "$msg"; then
+        printf "${C_SUCCESS}✔ Saved.${RESET}\n"
+        sleep 0.5
+    else
+        read -rsn1 -p "Error/Empty. Press key..."
+    fi
+    cursor_off
+}
+
+handle_selection() {
+    local stash_idx="$1"
+    local stash_msg="$2"
+    
+    # Sub-Menu Loop
+    local sub_sel=0
+    local options=("Apply (Keep)" "Pop (Apply & Drop)" "Drop (Delete)" "New Branch from Stash")
+    
+    while true; do
+        ui_header "STASH ACTION" "$stash_msg"
+        
+        for (( i=0; i<${#options[@]}; i++ )); do
+            is_sel="false"; [ $i -eq $sub_sel ] && is_sel="true"
+            ui_item "${options[$i]}" "" "$is_sel" "false"
+        done
+        
+        ui_line
+        printf "${C_MUTED} [Enter] Select  [q] Back${RESET}"
+        
+        read -rsn1 key
+        if [[ $key == $'\x1b' ]]; then
+             read -rsn2 k2; case "$k2" in '[A') ((sub_sel--));; '[B') ((sub_sel++));; esac
+             [ $sub_sel -lt 0 ] && sub_sel=3; [ $sub_sel -gt 3 ] && sub_sel=0
+        elif [[ $key == "q" ]]; then return
+        elif [[ $key == "" ]]; then
+            cursor_on
+            case $sub_sel in
+                0) # Apply
+                   git stash apply "stash@{$stash_idx}" && { printf "\n${C_SUCCESS}✔ Applied.${RESET}\n"; exit 0; }
+                   ;;
+                1) # Pop
+                   git stash pop "stash@{$stash_idx}" && { printf "\n${C_SUCCESS}✔ Popped.${RESET}\n"; exit 0; }
+                   ;;
+                2) # Drop
+                   printf "\n${C_DANGER}Drop this stash permanently? [y/N]${RESET} "
+                   read -r y
+                   if [[ "$y" =~ ^[Yy]$ ]]; then
+                       git stash drop "stash@{$stash_idx}"
+                       return # Reload main list
+                   fi
+                   ;;
+                3) # Branch
+                   ui_input "New Branch Name" "stash-branch"
+                   if [ -n "$VAL" ]; then
+                       git stash branch "$VAL" "stash@{$stash_idx}" && exit 0
+                   fi
+                   ;;
+            esac
+            read -rsn1 -p "Press key..."
+            cursor_off
+            return
+        fi
     done
-    printf "\n[0-$((TOT-1))] Action, [+] New, [q] Quit: "
-    read -r a; [ "$a" == "q" ] && exit 0
-    if [ "$a" == "+" ]; then printf "Message: "; read -r m; git stash push -m "$m"; continue; fi
-    if [[ "$a" =~ ^[0-9]+$ ]]; then
-        printf "1) Apply  2) Drop: "; read -r s
-        case $s in 1) git stash apply "stash@{$a}";; 2) git stash drop "stash@{$a}";; esac
-        read -rsn1 -p "Done."
+}
+
+# --- MAIN LOOP ---
+SEL=0; VS=0; MAX=10
+
+while true; do
+    # Load Stashes
+    # Format: stash@{0}|Subject|Time
+    RAW=$(git stash list --format="%gd|%s|%cr")
+    STASHES=()
+    while IFS= read -r line; do [ -n "$line" ] && STASHES+=("$line"); done <<< "$RAW"
+    
+    TOT=${#STASHES[@]}
+    
+    # Bounds Logic
+    [ $SEL -ge $TOT ] && SEL=$((TOT-1))
+    [ $SEL -lt 0 ] && SEL=0
+    [ $SEL -lt $VS ] && VS=$SEL
+    [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+
+    ui_header "STASH MANAGER" "$TOT Stashes stored"
+    
+    if [ $TOT -eq 0 ]; then
+        echo "  ${C_MUTED}(Clean workspace, no stashes)${RESET}"
+        printf "\n  Drücke 'n' um Änderungen zu speichern.\n"
+    else
+        for (( i=0; i<MAX; i++ )); do
+            IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
+            
+            parse_line "${STASHES[$IDX]}"
+            # P1=stash@{0}, P2=Msg, P3=Time
+            
+            # Index Nummer extrahieren für saubere Anzeige
+            ID="${P1#*\{}"
+            ID="${ID%\}}" 
+            
+            IS_SEL="false"; [ $IDX -eq $SEL ] && IS_SEL="true"
+            
+            ui_item "[$ID] $P2" "$P3" "$IS_SEL" "false"
+        done
+    fi
+    
+    ui_line
+    printf "${C_MUTED} [Enter] Actions  [n] New  [d] Drop  [q] Quit${RESET}"
+    
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+    elif [[ $key == "" && $TOT -gt 0 ]]; then
+        # Action Menu
+        parse_line "${STASHES[$SEL]}"
+        # Extract pure number
+        IDX_RAW="${P1#*\{}"; IDX_NUM="${IDX_RAW%\}}"
+        handle_selection "$IDX_NUM" "$P2"
+        
+    elif [[ $key == "n" ]]; then
+        create_stash
+        SEL=0 # Jump to newest
+    elif [[ $key == "d" && $TOT -gt 0 ]]; then
+        # Quick Drop
+        parse_line "${STASHES[$SEL]}"
+        IDX_RAW="${P1#*\{}"; IDX_NUM="${IDX_RAW%\}}"
+        cursor_on
+        printf "\n${C_DANGER}Drop stash {$IDX_NUM}? [y/N]${RESET} "
+        read -r y
+        [[ "$y" =~ ^[Yy]$ ]]; res=$?
+        if [ $res -eq 0 ]; then
+             git stash drop "stash@{$IDX_NUM}"
+             # Check bounds after delete
+             [ $SEL -ge $((TOT-1)) ] && SEL=$((SEL-1))
+        fi
+        cursor_off
+    elif [[ $key == "q" ]]; then
+        exit 0
     fi
 done

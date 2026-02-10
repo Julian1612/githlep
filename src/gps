@@ -1,163 +1,191 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
+
 CFG="$HOME/.config/git-suite/repos.json"
 
-# --- FIX: Ensure Database Exists ---
-# Erstellt die Datei mit einem leeren JSON-Array, falls sie fehlt.
-if [ ! -f "$CFG" ]; then
-    mkdir -p "$(dirname "$CFG")"
-    echo "[]" > "$CFG"
-fi
+# --- PYTHON ENGINE (Robust JSON Handling) ---
+# Wir nutzen Inline-Python für sauberes JSON-Parsing ohne 'jq' Abhängigkeit
+ensure_db() {
+    if [ ! -f "$CFG" ]; then
+        mkdir -p "$(dirname "$CFG")"
+        echo "[]" > "$CFG"
+    fi
+}
 
-# Python Logic (Robust & Optimized)
-# PY_L: List Repos (Handles missing file gracefully)
-PY_L="import sys,json; s=sys.argv[2].lower(); 
+# List: Liefert "Name|Path|Shortcut"
+PY_LIST="import sys,json; 
 try: d=json.load(open(sys.argv[1]))
 except: d=[]
-res=[]; ex=None
 for r in d:
- n=r.get('name',''); p=r.get('path',''); sc=r.get('shortcut','')
- line=f'{n}|{p}|{sc}'
- if not s or s in n.lower() or s in sc.lower(): res.append(line)
- if s and sc.lower()==s: ex=line
-if ex: print('JUMP|'+ex)
-else:
- for x in res: print(x)"
+    print(f\"{r.get('name','')}|{r.get('path','')}|{r.get('shortcut','')}\")"
 
-# PY_A: Add Repo (Loads existing DB properly)
-PY_A="import sys,json; c,p,n,s=sys.argv[1:5];
-try: d=json.load(open(c))
+# Find: Sucht nach Shortcut oder Teilstring im Namen
+PY_FIND="import sys,json; f,q=sys.argv[1:3]; q=q.lower();
+try: d=json.load(open(f))
 except: d=[]
-# Prevent duplicates based on path
-d=[i for i in d if i['path']!=p]
+found=None;
+for r in d:
+    # Exakter Shortcut Match gewinnt immer
+    if r.get('shortcut','').lower()==q: found=r['path']; break
+    # Sonst Fuzzy Search im Namen
+    if q in r.get('name','').lower() and not found: found=r['path']
+print(found or '')"
+
+# Add/Edit (Upsert based on Path)
+py_upsert() {
+    # args: path name shortcut
+    python3 -c "import sys,json; f,p,n,s=sys.argv[1:5];
+try: d=json.load(open(f))
+except: d=[]
+# Remove existing entry for this path to avoid dupes
+d=[i for i in d if i['path']!=p]; 
 d.append({'name':n,'path':p,'shortcut':s});
-json.dump(d,open(c,'w'),indent=2)"
+# Sort by name
+d.sort(key=lambda x: x['name'].lower())
+json.dump(d,open(f,'w'),indent=2)" "$CFG" "$1" "$2" "$3"
+}
 
-# PY_D: Delete Repo
-PY_D="import sys,json; c,p=sys.argv[1:3]; d=[i for i in json.load(open(c)) if i['path']!=p]; json.dump(d,open(c,'w'),indent=2)"
+# Delete
+py_del() {
+    python3 -c "import sys,json; f,p=sys.argv[1:3];
+try: d=json.load(open(f))
+except: d=[]
+d=[i for i in d if i['path']!=p];
+json.dump(d,open(f,'w'),indent=2)" "$CFG" "$1"
+}
 
-# PY_E: Edit Repo
-PY_E="import sys,json; c,p,n,s=sys.argv[1:5]; d=json.load(open(c)); 
-for i in d: 
- if i['path']==p: i['name']=n; i['shortcut']=s
-json.dump(d,open(c,'w'),indent=2)"
+# --- ACTIONS ---
 
-# --- ADD MODE (-a) ---
-if [[ "$1" == "-a" ]]; then
+add_current() {
     ui_header "ADD REPO" "$PWD"
+    local def_name=$(basename "$PWD")
+    ui_input "Name" "$def_name"; local n="$VAL"
+    ui_input "Shortcut (opt)" ""; local s="$VAL"
     
-    # Name Suggestion
-    DEF_NAME=$(basename "$PWD")
-    printf "${C_ACCENT}Name${RESET} [$DEF_NAME]: "; read -r n;
-    n="${n:-$DEF_NAME}"
-    
-    # Shortcut
-    printf "${C_ACCENT}Shortcut${RESET}: "; read -r s
-    
-    # Execute Python Add
-    python3 -c "$PY_A" "$CFG" "$PWD" "$n" "$s"
-    
-    printf "${C_SUCCESS}✔ Saved to $CFG${RESET}\n";
-    exit 0
-fi
+    ensure_db
+    py_upsert "$PWD" "$n" "$s"
+}
 
-# --- JUMP MODE (Argument provided) ---
+edit_repo() {
+    local line="$1"
+    parse_line "$line"
+    # P1=Name, P2=Path, P3=Shortcut
+    
+    ui_header "EDIT REPO" "$P1"
+    ui_input "Name" "$P1"; local n="$VAL"
+    ui_input "Shortcut" "$P3"; local s="$VAL"
+    
+    py_upsert "$P2" "$n" "$s"
+}
+
+# --- CLI JUMP MODE (Argument provided) ---
 if [ -n "$1" ]; then
-    OUT=$(python3 -c "$PY_L" "$CFG" "$1")
-    if [[ "$OUT" == JUMP* ]]; then 
-        parse_line "${OUT#JUMP|*}"; 
-        printf "${C_SUCCESS}✔ Jumping to $P1${RESET}\n"; 
-        # Check if code implies VS Code or generic editor
+    ensure_db
+    if [ "$1" == "-a" ]; then
+        add_current
+        echo "${C_SUCCESS}✔ Added current repo.${RESET}"
+        exit 0
+    fi
+    
+    # Search via Python
+    TARGET=$(python3 -c "$PY_FIND" "$CFG" "$1")
+    
+    if [ -n "$TARGET" ]; then
+        printf "${C_SUCCESS}🚀 Jumping to $TARGET...${RESET}\n"
         if command -v code >/dev/null 2>&1; then
-            code -r "$P2"
+            code -r "$TARGET"
         else
-            echo "Öffne in $P2..."
-            cd "$P2" || exit 1
-            $SHELL
+            # Fallback für reines Terminal
+            cd "$TARGET" && exec $SHELL
         fi
-        exit 0; 
+        exit 0
+    else
+        echo "${C_RED}Project not found: $1${RESET}"
+        exit 1
     fi
 fi
 
-# --- UI MODE (Interactive Manager) ---
-PWD_CUR=$(pwd -P); MAX=10; SEL=0; VS=0
-tput civis;
-cleanup(){ tput cnorm; }; trap cleanup EXIT
+# --- UI MODE (Interactive) ---
+ensure_db
+SEL=0; VS=0; MAX=10
 
 while true; do
-    REPOS=(); while IFS= read -r line; do REPOS+=("$line");
-    done < <(python3 -c "$PY_L" "$CFG" "$S")
+    # Load Data (Python -> Bash Array)
+    REPOS=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && REPOS+=("$line")
+    done < <(python3 -c "$PY_LIST" "$CFG")
     
     TOT=${#REPOS[@]}
     
-    # Selection Bounds
-    [ $SEL -ge $TOT ] && SEL=$((TOT-1));
+    # Bounds & Scroll Logic
+    [ $SEL -ge $TOT ] && SEL=$((TOT-1))
     [ $SEL -lt 0 ] && SEL=0
-    
-    # Scroll Logic
-    [ $SEL -lt $VS ] && VS=$SEL;
+    [ $SEL -lt $VS ] && VS=$SEL
     [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
 
-    ui_header "REPO MANAGER" "$TOT Repos stored"
+    ui_header "REPO MANAGER" "$TOT Projects"
+    
+    PWD_CUR=$(pwd -P)
     
     if [ $TOT -eq 0 ]; then
-        printf "\n  ${C_WARN}Database empty.${RESET}\n"
-        printf "  File: $CFG\n"
-        printf "  ${C_MUTED}Press 'a' to add current folder.${RESET}\n"
+        echo "  ${C_MUTED}(Database empty)${RESET}"
+        echo "  Drücke 'a', um den aktuellen Ordner zu speichern."
+    else
+        for (( i=0; i<MAX; i++ )); do
+            IDX=$((VS+i))
+            [ $IDX -ge $TOT ] && break
+            
+            parse_line "${REPOS[$IDX]}"
+            # P1=Name, P2=Path, P3=Shortcut
+            
+            # Label Formatierung
+            LABEL="$P1"
+            [ -n "$P3" ] && LABEL="$P1 ${C_ACCENT}[$P3]${RESET}"
+            
+            IS_SEL="false"; [ $IDX -eq $SEL ] && IS_SEL="true"
+            
+            # Highlight current active repo
+            IS_CUR="false"; [[ "$PWD_CUR" == "$P2" ]] && IS_CUR="true"
+            
+            ui_item "$LABEL" "$P2" "$IS_SEL" "$IS_CUR"
+        done
     fi
-
-    for (( i=0; i<MAX; i++ )); do
-        IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
-        parse_line "${REPOS[$IDX]}"
-        
-        LABEL="$P1";
-        [ -n "$P3" ] && LABEL="$P1 ${C_ACCENT}[$P3]${RESET}"
-        
-        CUR="false";
-        [[ "$PWD_CUR" == "$P2"* ]] && CUR="true"
-        
-        SEL_BOOL="false";
-        [ $IDX -eq $SEL ] && SEL_BOOL="true"
-        
-        ui_item "$LABEL" "$P2" "$SEL_BOOL" "$CUR"
-    done
     
-    printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
+    ui_line
     printf "${C_MUTED} [Enter] Open  [a] Add  [e] Edit  [d] Delete  [q] Quit${RESET}"
-
-    read -rsn1 key
-    if [[ $key == $'\x1b' ]]; then 
-        read -rsn2 k2; 
-        case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
     
-    elif [[ $key == "" && $TOT -gt 0 ]]; then 
-        parse_line "${REPOS[$SEL]}"; tput cnorm;
-        printf "\n${C_SUCCESS}Opening...${RESET}\n"; 
-        code -r "$P2" 2>/dev/null || { cd "$P2" && $SHELL; }
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 k2
+        case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+    elif [[ $key == "" && $TOT -gt 0 ]]; then
+        # OPEN ACTION
+        parse_line "${REPOS[$SEL]}"
+        cursor_on
+        printf "\n${C_SUCCESS}Opening $P1...${RESET}\n"
+        if command -v code >/dev/null 2>&1; then
+            code -r "$P2"
+            exit 0
+        else
+            cd "$P2" || exit 1
+            exec $SHELL
+        fi
+        
+    elif [[ $key == "a" ]]; then
+        add_current
+    elif [[ $key == "e" && $TOT -gt 0 ]]; then
+        edit_repo "${REPOS[$SEL]}"
+    elif [[ $key == "d" && $TOT -gt 0 ]]; then
+        parse_line "${REPOS[$SEL]}"
+        cursor_on
+        printf "\n${C_DANGER}Remove '$P1' from list? [y/N]${RESET} "
+        read -r y
+        if [[ "$y" =~ ^[Yy]$ ]]; then
+            py_del "$P2"
+        fi
+        cursor_off
+    elif [[ $key == "q" ]]; then
         exit 0
-        
-    elif [[ $key == "a" ]]; then 
-        tput cnorm;
-        ui_header "ADD REPO" ""; 
-        printf "${C_ACCENT}Name${RESET} [$(basename "$PWD_CUR")]: "; read -r n; n="${n:-$(basename "$PWD_CUR")}"; 
-        printf "${C_ACCENT}Shortcut${RESET}: "; read -r s;
-        python3 -c "$PY_A" "$CFG" "$PWD_CUR" "$n" "$s"; 
-        tput civis
-        
-    elif [[ $key == "d" && $TOT -gt 0 ]]; then 
-        parse_line "${REPOS[$SEL]}"; tput cnorm; 
-        printf "\n${C_DANGER}Delete '$P1'? [y/N]${RESET} "; read -r y;
-        [[ "$y" =~ ^[Yy]$ ]] && python3 -c "$PY_D" "$CFG" "$P2";
-        tput civis
-        
-    elif [[ $key == "e" && $TOT -gt 0 ]]; then 
-        parse_line "${REPOS[$SEL]}"; tput cnorm;
-        printf "\nName [$P1]: "; read -r n; 
-        printf "Shortcut [$P3]: "; read -r s;
-        python3 -c "$PY_E" "$CFG" "$P2" "${n:-$P1}" "${s:-$P3}"; 
-        tput civis
-        
-    elif [[ $key == "q" ]]; then 
-        exit 0; 
     fi
 done

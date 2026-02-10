@@ -1,181 +1,173 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
 
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "${C_RED}Fehler: Kein Git-Repository.${RESET}"
-    exit 1
-fi
+# --- GIT CHECK ---
+check_git
 
-# --- HELP ---
-show_help() {
-    ui_header "GCW MANUAL" "Git Commit Wizard"
-    printf "${C_MAIN}${BOLD}USAGE${RESET}\n"
-    printf "  ${C_ACCENT}gcw${RESET}          Wizard (Review -> Commit -> Push)\n"
-    printf "  ${C_ACCENT}gcw -p${RESET}       Push & PR (alias: gup)\n"
-    printf "  ${C_ACCENT}gcw -r${RESET}       Revert (alias: gundo)\n"
-    printf "  ${C_ACCENT}gcw -h${RESET}       Hilfe\n\n"
-    exit 0
-}
+# --- MAIN LOOP ---
+SEL=0
+VS=0
+MAX=10
 
-# --- PUSH LOGIC ---
-do_push() {
-    CB=$(git branch --show-current)
-    tput cnorm
-    printf "\n${C_ACCENT}Pushing '$CB'...${RESET} "
-    if OUT=$(git push 2>&1); then
-        printf "${C_GREEN}✔ Done${RESET}\n"
+while true; do
+    # 1. BRANCHES LADEN (Optimiert: Sortiert nach Committer Date)
+    # Format: RefName | IsHead | UpstreamStatus | Subject
+    RAW=$(git for-each-ref --sort=-committerdate refs/heads/ --format='%(refname:short)|%(HEAD)|%(upstream:track)|%(subject)')
+    
+    BRANCHES=()
+    CURRENT_BRANCH=""
+    
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        
+        # Parse Line
+        parse_line "$line" # P1=Name, P2=Head(*), P3=Track|Subject...
+        
+        # P3 enthält Track+Subject, wir müssen das splitten
+        # Das Format oben ist etwas tricky mit parse_line, daher manuell:
+        NAME="${line%%|*}"
+        REST="${line#*|}"
+        IS_HEAD="${REST%%|*}"
+        REST="${REST#*|}"
+        TRACK="${REST%%|*}"
+        SUBJ="${REST#*|}"
+        
+        # Current Branch finden
+        if [ "$IS_HEAD" == "*" ]; then
+            CURRENT_BRANCH="$NAME"
+            # Den aktuellen Branch wollen wir oft oben haben, aber durch Sortierung 
+            # ist er eh meist oben (da gerade ausgecheckt = commit/checkout touch).
+            # Wir markieren ihn visuell.
+        fi
+        
+        # Zeile für UI speichern
+        BRANCHES+=("$NAME|$IS_HEAD|$TRACK|$SUBJ")
+    done <<< "$RAW"
+    
+    TOT=${#BRANCHES[@]}
+    
+    # Bounds Check
+    [ $SEL -ge $TOT ] && SEL=$((TOT-1))
+    [ $SEL -lt 0 ] && SEL=0
+    
+    # Scroll Check
+    [ $SEL -lt $VS ] && VS=$SEL
+    [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+    
+    # --- UI RENDER ---
+    ui_header "BRANCH MANAGER" "Aktuell: $CURRENT_BRANCH"
+    
+    if [ $TOT -eq 0 ]; then
+        echo "  ${C_MUTED}(Keine Branches gefunden)${RESET}"
     else
-        if [[ "$OUT" == *"upstream"* ]]; then
-            printf "${C_YELLOW}⚠ No upstream.${RESET}\nSet upstream? [Y/n] "; read -r y
-            [[ "$y" =~ ^[Yy]?$ ]] && git push -u origin "$CB" && printf "${C_GREEN}✔ Done${RESET}\n" || exit 1
+        for (( i=0; i<MAX; i++ )); do
+            IDX=$((VS+i))
+            [ $IDX -ge $TOT ] && break
+            
+            LINE="${BRANCHES[$IDX]}"
+            # Split
+            B_NAME="${LINE%%|*}"
+            REST="${LINE#*|}"
+            B_HEAD="${REST%%|*}"
+            REST="${REST#*|}"
+            B_TRACK="${REST%%|*}"
+            B_SUBJ="${REST#*|}"
+            
+            IS_SEL="false"; [ $IDX -eq $SEL ] && IS_SEL="true"
+            IS_CUR="false"; [ "$B_HEAD" == "*" ] && IS_CUR="true"
+            
+            # Label Styling
+            LABEL="$B_NAME"
+            if [[ "$B_NAME" =~ ^(main|master|dev|development)$ ]]; then
+                LABEL="${BOLD}$B_NAME${RESET}"
+            fi
+            
+            # Info String (Track + Subject)
+            INFO=""
+            [ -n "$B_TRACK" ] && INFO="${C_ACCENT}$B_TRACK${RESET} "
+            INFO+="${B_SUBJ}"
+            
+            ui_item "$LABEL" "$INFO" "$IS_SEL" "$IS_CUR"
+        done
+    fi
+    
+    ui_line
+    printf "${C_MUTED} [Enter] Switch  [n] New  [d] Delete  [r] Rename  [q] Quit${RESET}"
+    
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 k2
+        case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
+        
+    elif [[ $key == "" && $TOT -gt 0 ]]; then
+        # SWITCH
+        TARGET_LINE="${BRANCHES[$SEL]}"
+        TARGET="${TARGET_LINE%%|*}"
+        
+        if [ "$TARGET" == "$CURRENT_BRANCH" ]; then
+            # Wenn schon drauf, nichts tun (oder pullen?)
+            continue
+        fi
+        
+        cursor_on
+        printf "\n${C_SUCCESS}Switching to '$TARGET'...${RESET}\n"
+        if git switch "$TARGET"; then
+             # VS Code Refresh Trick
+            [ -d ".git" ] && touch .git/index
+            exit 0
         else
-            printf "\n${C_RED}Failed:${RESET}\n$OUT\n"; exit 1
+            printf "${C_RED}Switch failed.${RESET}\n"
+            read -rsn1 -p "Press key..."
         fi
-    fi
-    U=$(git config remote.origin.url)
-    [[ "$U" == git@* ]] && U=${U//:/\/} && U=${U//git@/https:\/\/}
-    U=${U%.git}
-    LINK=""
-    [[ "$U" == *github* ]] && LINK="$U/compare/$CB?expand=1"
-    [[ "$U" == *gitlab* ]] && LINK="$U/-/merge_requests/new?merge_request[source_branch]=$CB"
-    if [ -n "$LINK" ]; then
-        printf "${C_GREEN}Open PR? [Y/n]${RESET} "; read -rsn1 k; printf "\n"
-        [[ "$k" =~ ^[Yy]?$ ]] && (open "$LINK" || wslview "$LINK" || xdg-open "$LINK") 2>/dev/null
-    fi
-}
-
-# --- REVERT LOGIC ---
-do_revert() {
-    C=(); while IFS= read -r line; do C+=("$line"); done < <(git log --pretty=format:"%h|%s|%cr" -n 50)
-    TOT=${#C[@]}; [ $TOT -eq 0 ] && echo "Keine Commits." && exit 0
-    SEL=0; VS=0; MAX=10
-    tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
-    while true; do
-        [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
-        ui_header "REVERT COMMIT" "Select to Undo"
-        for (( i=0; i<MAX; i++ )); do
-            IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
-            parse_line "${C[$IDX]}"; S="false"; [ $IDX -eq $SEL ] && S="true"
-            ui_item "$P1 $P2" "$P3" "$S" "false"
-        done
-        read -rsn1 key
-        if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
-        elif [[ $key == "" ]]; then
-            parse_line "${C[$SEL]}"; tput cnorm
-            printf "\n${C_DANGER}Revert '$P2'? [y/N]${RESET} "; read -r y
-            [[ "$y" =~ ^[Yy]$ ]] && git revert --no-edit "$P1" && printf "${C_SUCCESS}✔ Reverted.${RESET}\n" && exit 0
-            tput civis
-        elif [[ $key == "q" ]]; then exit 0; fi
-        [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
-    done
-}
-
-# --- FILE REVIEW LOGIC (NEW) ---
-review_changes() {
-    # Hole Liste der gestagten Dateien
-    FILES=()
-    while IFS= read -r file; do FILES+=("$file"); done < <(git diff --cached --name-only)
-    TOT=${#FILES[@]}
-    
-    SEL=0; VS=0; MAX=10
-    
-    while true; do
-        [ $SEL -lt $VS ] && VS=$SEL; [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+        cursor_off
         
-        ui_header "REVIEW CHANGES" "$TOT Files Staged"
-        
-        for (( i=0; i<MAX; i++ )); do
-            IDX=$((VS+i)); [ $IDX -ge $TOT ] && break
-            FILE="${FILES[$IDX]}"
-            S="false"; [ $IDX -eq $SEL ] && S="true"
-            
-            # Status ermitteln (M=Modified, A=Added, D=Deleted)
-            STAT=$(git diff --cached --name-status "$FILE" | cut -c1)
-            case "$STAT" in
-                "A") DESC="${C_GREEN}New File${RESET}" ;;
-                "M") DESC="${C_ACCENT}Modified${RESET}" ;;
-                "D") DESC="${C_RED}Deleted${RESET}" ;;
-                *)   DESC="${C_MUTED}Changed${RESET}" ;;
-            esac
-            
-            ui_item "$FILE" "$DESC" "$S" "false"
-        done
-        
-        printf "${C_MUTED}────────────────────────────────────────────────────────${RESET}\n"
-        printf "${C_MUTED} [Enter] View Diff  [c] Commit  [q] Abort${RESET}"
-        
-        read -rsn1 key
-        if [[ $key == $'\x1b' ]]; then
-            read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
-        elif [[ $key == "c" ]]; then
-            return 0 # Proceed to commit
-        elif [[ $key == "q" ]]; then
-            tput cnorm; echo ""; exit 0
-        elif [[ $key == "" ]]; then
-            # VIEW DIFF
-            FILE="${FILES[$SEL]}"
-            tput cnorm
-            # Use git diff with color and less for scrolling
-            git diff --cached --color "$FILE" | less -R
-            tput civis
+    elif [[ $key == "n" ]]; then
+        # NEW
+        ui_input "New Branch Name" ""
+        NEW_NAME="$VAL"
+        if [ -n "$NEW_NAME" ]; then
+            if git switch -c "$NEW_NAME"; then
+                [ -d ".git" ] && touch .git/index
+                exit 0
+            else
+                read -rsn1 -p "Press key..."
+            fi
         fi
         
-        [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
-    done
-}
-
-# --- COMMIT LOGIC ---
-do_commit() {
-    # 1. Alles stagen
-    git add -A
-    
-    # 2. Check ob leer
-    if git diff --cached --quiet; then
-        echo "${C_MUTED}No changes.${RESET}"; printf "Push anyway? [y/N] "; read -r y
-        [[ "$y" =~ ^[Yy]$ ]] && do_push; exit 0
+    elif [[ $key == "d" && $TOT -gt 0 ]]; then
+        # DELETE
+        TARGET_LINE="${BRANCHES[$SEL]}"
+        TARGET="${TARGET_LINE%%|*}"
+        
+        if [[ "$TARGET" == "$CURRENT_BRANCH" ]]; then
+            tput cnorm; printf "\n${C_WARN}Cannot delete current branch.${RESET}"; sleep 1; tput civis; continue
+        fi
+        
+        if [[ "$TARGET" =~ ^(main|master|dev)$ ]]; then
+             tput cnorm; printf "\n${C_WARN}Protected branch: $TARGET${RESET}"; sleep 1; tput civis; continue
+        fi
+        
+        cursor_on
+        printf "\n${C_DANGER}DELETE '$TARGET'? [y/N]${RESET} "
+        read -r y
+        if [[ "$y" =~ ^[Yy]$ ]]; then
+            git branch -D "$TARGET"
+        fi
+        cursor_off
+        
+    elif [[ $key == "r" && $TOT -gt 0 ]]; then
+        # RENAME
+        TARGET_LINE="${BRANCHES[$SEL]}"
+        TARGET="${TARGET_LINE%%|*}"
+        
+        ui_input "Rename '$TARGET' to" "$TARGET"
+        NEW_NAME="$VAL"
+        
+        if [ -n "$NEW_NAME" ] && [ "$NEW_NAME" != "$TARGET" ]; then
+            git branch -m "$TARGET" "$NEW_NAME"
+        fi
+        
+    elif [[ $key == "q" ]]; then
+        exit 0
     fi
-    
-    # 3. REVIEW CHANGES (NEU!)
-    tput civis; cleanup(){ tput cnorm; }; trap cleanup EXIT
-    review_changes
-    
-    # 4. Select Type
-    OPT=("feat" "fix" "chore" "docs" "refactor" "style" "test")
-    DESC=("Feature" "Bug Fix" "Maintenance" "Docs" "Refactor" "Style" "Tests")
-    SEL=0; TOT=${#OPT[@]}
-    
-    while true; do
-        ui_header "COMMIT TYPE" "Select"
-        for (( i=0; i<TOT; i++ )); do
-            S="false"; [ $i -eq $SEL ] && S="true"
-            ui_item "${OPT[$i]}" "${DESC[$i]}" "$S" "false"
-        done
-        read -rsn1 key
-        if [[ $key == $'\x1b' ]]; then read -rsn2 k2; case "$k2" in '[A') ((SEL--));; '[B') ((SEL++));; esac
-        elif [[ $key == "" ]]; then break
-        elif [[ $key == "q" ]]; then exit 0; fi
-        [ $SEL -lt 0 ] && SEL=$((TOT-1)); [ $SEL -ge $TOT ] && SEL=0
-    done
-    tput cnorm; TYPE=${OPT[$SEL]}
-    
-    # 5. Message
-    ui_header "COMMIT MESSAGE" "$TYPE"
-    printf "${C_ACCENT}Scope${RESET} (opt): "; read -r s
-    printf "${C_ACCENT}Message${RESET}: "; read -r m
-    [ -z "$m" ] && echo "${C_DANGER}Empty message.${RESET}" && exit 1
-    FULL="$TYPE"; [ -n "$s" ] && FULL+="($s)"; FULL+=": $m"
-    
-    # 6. Commit & Push
-    printf "\n${C_MUTED}Committing...${RESET}\n"
-    if git commit -m "$FULL"; then
-        printf "\n${C_TITLE}Push? [y/N]${RESET} "; read -r y
-        [[ "$y" =~ ^[Yy]$ ]] && do_push
-    fi
-}
-
-case "$1" in
-    -p|--push) do_push ;;
-    -r|--revert|--undo) do_revert ;;
-    -h|--help) show_help ;;
-    *) do_commit ;;
-esac
+done

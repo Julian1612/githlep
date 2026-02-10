@@ -1,36 +1,163 @@
 #!/bin/bash
 source "$HOME/.local/bin/git-suite-lib.sh"
-CFG="$HOME/.config/git-suite/favorites"
 
-if [[ "$1" == "-a" ]]; then
-    [ -z "$2" ] && echo "Usage: gh -a <alias> <desc> [cmd]" && exit 1
-    echo "$2|$3|$4" >> "$CFG"; echo "${C_SUCCESS}Saved.${RESET}"; exit 0
-fi
+CONF="$HOME/.config/git-suite/aliases.conf"
+[ ! -f "$CONF" ] && touch "$CONF"
 
-ui_header "GIT DASHBOARD" "Suite v2"
-print_row() { printf "  ${C_ACCENT}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$1" "$2" "$3"; }
-print_section() { printf "\n${C_MAIN}${BOLD}%s${RESET}\n" "$1"; }
+# --- HELPER: Manage Config ---
+add_alias() {
+    ui_header "ADD SHORTCUT" "New Favorite"
+    ui_input "Kürzel (z.B. gclean)" ""; local s="$VAL"
+    [ -z "$s" ] && return
+    ui_input "Name (Beschreibung)" ""; local n="$VAL"
+    ui_input "Befehl" ""; local c="$VAL"
+    
+    # Append to file
+    echo "$s|$n|$c" >> "$CONF"
+}
 
-print_section "⚡ WORKFLOW"
-print_row "gps" "Repo Manager"      "Projekte suchen & wechseln"
-print_row "gsw" "Branch Manager"    "Switch / New / Delete / Rename"
-print_row "gcw" "Smart Commit"      "Wizard (Add, Commit, Push)"
+edit_alias() {
+    local line="$1"
+    parse_line "$line"
+    # P1=Short, P2=Name, P3=Cmd
+    
+    ui_header "EDIT SHORTCUT" "$P1"
+    ui_input "Kürzel" "$P1"; local s="$VAL"
+    ui_input "Name" "$P2"; local n="$VAL"
+    ui_input "Befehl" "$P3"; local c="$VAL"
+    
+    # Replace in file (via temp file)
+    # We escape special chars for sed safety or use simple loop match
+    t=$(mktemp)
+    while IFS= read -r l; do
+        if [[ "$l" == "$line" ]]; then
+            echo "$s|$n|$c" >> "$t"
+        else
+            echo "$l" >> "$t"
+        fi
+    done < "$CONF"
+    mv "$t" "$CONF"
+}
 
-print_section "🚀 ACTIONS (via gcw)"
-print_row "gup" "Push & PR"         "Direkt Push (gcw -p)"
-print_row "gundo" "Revert"          "Undo Commit (gcw -r)"
+delete_alias() {
+    local line="$1"
+    parse_line "$line"
+    tput cnorm
+    printf "\n${C_DANGER}Lösche '$P1'? [y/N]${RESET} "
+    read -r y
+    if [[ "$y" =~ ^[Yy]$ ]]; then
+        t=$(mktemp)
+        grep -Fv "$line" "$CONF" > "$t"
+        mv "$t" "$CONF"
+    fi
+    tput civis
+}
 
-print_section "🛠  TOOLS"
-print_row "gst" "Stash Manager"     "Stashes verwalten"
-print_row "gset" "Settings"         "Einstellungen & Aliase"
-print_row "gs" "Status" "Git Status"
-print_row "gl" "Pull" "Git Pull Rebase"
+# --- MAIN LOOP ---
+SEL=0
+VS=0
+MAX=12
 
-if [ -f "$CFG" ] && [ -s "$CFG" ]; then
-    print_section "🌟 FAVORITES"
-    while IFS='|' read -r c d f; do
-        [[ -z "$c" || "$c" =~ ^# ]] && continue
-        printf "  ${C_YELLOW}%-10s${RESET}  %-20s  ${C_MUTED}%s${RESET}\n" "$c" "$d" "${f:-Custom}"
-    done < "$CFG"
-fi
-printf "\n"
+while true; do
+    # 1. Load Data (preserve order, handle comments)
+    LINES=()
+    DISPLAY_LINES=() # To map index to real line
+    
+    # Read file
+    while IFS= read -r l; do
+        [ -z "$l" ] && continue
+        LINES+=("$l")
+    done < "$CONF"
+    
+    TOT=${#LINES[@]}
+    
+    # Bounds
+    [ $SEL -ge $TOT ] && SEL=$((TOT-1))
+    [ $SEL -lt 0 ] && SEL=0
+    
+    # Scroll
+    [ $SEL -lt $VS ] && VS=$SEL
+    [ $SEL -ge $((VS+MAX)) ] && VS=$((SEL-MAX+1))
+
+    ui_header "CONTROL CENTER" "Git Suite v10"
+    
+    if [ $TOT -eq 0 ]; then
+        echo "  ${C_MUTED}(Keine Favoriten definiert)${RESET}"
+        echo "  Drücke 'a' um einen hinzuzufügen."
+    else
+        for (( i=0; i<MAX; i++ )); do
+            IDX=$((VS+i))
+            [ $IDX -ge $TOT ] && break
+            
+            L="${LINES[$IDX]}"
+            
+            # Check if Comment/Section
+            if [[ "$L" =~ ^# ]]; then
+                # Section Header
+                CLEAN="${L/\# /}"
+                printf "  ${C_ACCENT}${BOLD}%s${RESET}\n" "$CLEAN"
+                
+                # Wenn Selection auf Header steht, automatisch überspringen
+                if [ $IDX -eq $SEL ]; then
+                     # Logic to skip headers handled in key input mainly, 
+                     # but here just for display
+                     :
+                fi
+            else
+                # Normal Item
+                parse_line "$L"
+                # P1=Short, P2=Name, P3=Cmd
+                
+                IS_SEL="false"
+                [ $IDX -eq $SEL ] && IS_SEL="true"
+                
+                LABEL="${P1}"
+                INFO="${P2}"
+                
+                ui_item "$LABEL" "$INFO" "$IS_SEL" "false"
+            fi
+        done
+    fi
+
+    ui_line
+    printf "${C_MUTED} [Enter] Run  [a] Add  [e] Edit  [d] Delete  [q] Quit${RESET}"
+    
+    read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 k2
+        case "$k2" in
+            '[A') 
+                ((SEL--))
+                # Skip comments going up
+                while [ $SEL -ge 0 ] && [[ "${LINES[$SEL]}" =~ ^# ]]; do ((SEL--)); done
+                ;;
+            '[B') 
+                ((SEL++))
+                # Skip comments going down
+                while [ $SEL -lt $TOT ] && [[ "${LINES[$SEL]}" =~ ^# ]]; do ((SEL++)); done
+                ;;
+        esac
+    elif [[ $key == "" ]]; then
+        # RUN
+        L="${LINES[$SEL]}"
+        if [[ ! "$L" =~ ^# ]]; then
+            parse_line "$L"
+            tput cnorm
+            printf "\n${C_SUCCESS}Running: $P2 ($P3)${RESET}\n"
+            eval "$P3"
+            
+            # Pause if command was quick, so user sees output
+            # But if it was a switcher (exec), we are gone anyway.
+            exit 0
+        fi
+        
+    elif [[ $key == "a" ]]; then
+        add_alias
+    elif [[ $key == "e" ]]; then
+        [[ ! "${LINES[$SEL]}" =~ ^# ]] && edit_alias "${LINES[$SEL]}"
+    elif [[ $key == "d" ]]; then
+        [[ ! "${LINES[$SEL]}" =~ ^# ]] && delete_alias "${LINES[$SEL]}"
+    elif [[ $key == "q" ]]; then
+        exit 0
+    fi
+done
