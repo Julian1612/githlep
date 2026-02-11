@@ -1,0 +1,15 @@
+#!/bin/bash
+# Wrapper für Repo Manager
+# Bootloader finden (relativ zum Skript oder im System)
+SELF_DIR="$(dirname "$(readlink -f "$0")")"
+# Annahme: bin/ liegt neben shell/
+BOOTLOADER="$SELF_DIR/../shell/bootloader.sh"
+
+if [ -f "$BOOTLOADER" ]; then
+    source "$BOOTLOADER"
+else
+    echo "Error: Bootloader not found at $BOOTLOADER"
+    exit 1
+fi
+
+lcp_run "repo" "$@"
